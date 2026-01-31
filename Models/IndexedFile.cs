@@ -19,6 +19,7 @@ public enum SortDirection
 public class IndexedFile
 {
     public long Id { get; set; }
+    public int CollectionId { get; set; }
     public required string Name { get; set; }
     public required string Path { get; set; }
     public required string Directory { get; set; }

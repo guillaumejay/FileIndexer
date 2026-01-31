@@ -1,0 +1,258 @@
+@inject SearchService Search
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="view-container">
+    <div class="search-header">
+        <div class="search-wrapper">
+            <input type="text"
+                   class="search-input"
+                   @bind="searchQuery"
+                   @bind:event="oninput"
+                   @onkeyup="OnSearchKeyUp"
+                   placeholder="Search..." />
+        </div>
+        @if (AvailableCollections.Count > 0)
+        {
+            <div class="collection-filter">
+                @foreach (var col in AvailableCollections)
+                {
+                    <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
+                        <input type="checkbox"
+                               checked="@selectedCollectionIds.Contains(col.Id)"
+                               @onchange="() => ToggleCollection(col.Id)" />
+                        @col.Name
+                    </label>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="stats-row">
+        <span>📋 @totalCount.ToString("N0") files</span>
+        @if (stats != null)
+        {
+            <span class="stats-divider">|</span>
+            <span>📊 Index: @stats.TotalFiles.ToString("N0")</span>
+            <span class="stats-divider">|</span>
+            <span>💾 @stats.TotalSizeFormatted</span>
+            @if (stats.LastIndexedAtUtc.HasValue)
+            {
+                <span class="stats-divider">|</span>
+                <span>⏱️ @FormatRelativeTime(stats.LastIndexedAtUtc.Value)</span>
+            }
+        }
+    </div>
+
+    <div class="file-list-container">
+        <table class="file-list-table">
+            <thead>
+                <tr>
+                    <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
+                        Name <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
+                        Directory <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
+                        Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
+                        Size <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
+                        Modified <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize @ref="virtualizeRef" ItemsProvider="LoadFilesAsync" ItemSize="22" OverscanCount="20">
+                    <ItemContent>
+                        <tr @onclick="() => CopyPath(context.Path)" title="Click to copy path">
+                            <td class="file-name">@context.Name</td>
+                            <td class="file-dir" title="@context.Directory">@TruncatePath(context.Directory, 50)</td>
+                            <td class="file-ext">@context.Extension</td>
+                            <td class="file-size">@context.SizeFormatted</td>
+                            <td class="file-date">@context.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    </ItemContent>
+                    <Placeholder>
+                        <tr>
+                            <td colspan="5" style="color: var(--text-secondary);">Loading...</td>
+                        </tr>
+                    </Placeholder>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (showCopyNotification)
+{
+    <div class="notification">Path copied!</div>
+}
+
+@code {
+    [Parameter] public List<Collection> AvailableCollections { get; set; } = new();
+    [Parameter] public EventCallback OnCollectionsChanged { get; set; }
+
+    private string searchQuery = "";
+    private SortColumn sortColumn = SortColumn.Name;
+    private SortDirection sortDirection = SortDirection.Asc;
+    private int totalCount = 0;
+    private HashSet<int> selectedCollectionIds = new();
+    private IndexStats? stats;
+    private bool showCopyNotification = false;
+
+    private Virtualize<IndexedFile>? virtualizeRef;
+    private System.Timers.Timer? debounceTimer;
+    private System.Timers.Timer? notificationTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        debounceTimer = new System.Timers.Timer(200);
+        debounceTimer.AutoReset = false;
+        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(RefreshList);
+
+        notificationTimer = new System.Timers.Timer(2000);
+        notificationTimer.AutoReset = false;
+        notificationTimer.Elapsed += (s, e) => InvokeAsync(() => { showCopyNotification = false; StateHasChanged(); });
+
+        await LoadStats();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Select all collections by default when list changes
+        if (AvailableCollections.Count > 0 && selectedCollectionIds.Count == 0)
+        {
+            selectedCollectionIds = AvailableCollections.Select(c => c.Id).ToHashSet();
+        }
+    }
+
+    public async Task RefreshData()
+    {
+        selectedCollectionIds = AvailableCollections.Select(c => c.Id).ToHashSet();
+        await LoadStats();
+        await RefreshList();
+    }
+
+    private void ToggleCollection(int collectionId)
+    {
+        if (selectedCollectionIds.Contains(collectionId))
+        {
+            selectedCollectionIds.Remove(collectionId);
+        }
+        else
+        {
+            selectedCollectionIds.Add(collectionId);
+        }
+        _ = RefreshList();
+        _ = LoadStats();
+    }
+
+    private IEnumerable<int>? GetSelectedCollectionIds()
+    {
+        if (selectedCollectionIds.Count == 0 || selectedCollectionIds.Count == AvailableCollections.Count)
+        {
+            return null;
+        }
+        return selectedCollectionIds;
+    }
+
+    private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
+    {
+        var effectiveSortColumn = sortColumn;
+        var effectiveSortDirection = sortDirection;
+
+        if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc)
+        {
+            effectiveSortColumn = SortColumn.Rank;
+            effectiveSortDirection = SortDirection.Asc;
+        }
+
+        var result = await Search.SearchWithSortAsync(
+            searchQuery,
+            effectiveSortColumn,
+            effectiveSortDirection,
+            request.Count,
+            request.StartIndex,
+            GetSelectedCollectionIds());
+
+        totalCount = result.TotalCount;
+        await InvokeAsync(StateHasChanged);
+
+        return new ItemsProviderResult<IndexedFile>(result.Files, result.TotalCount);
+    }
+
+    private async Task LoadStats()
+    {
+        stats = await Search.GetStatsAsync(GetSelectedCollectionIds());
+    }
+
+    private void SetSort(SortColumn column)
+    {
+        if (sortColumn == column)
+        {
+            sortDirection = sortDirection == SortDirection.Asc ? SortDirection.Desc : SortDirection.Asc;
+        }
+        else
+        {
+            sortColumn = column;
+            sortDirection = column is SortColumn.Size or SortColumn.ModifiedAt
+                ? SortDirection.Desc
+                : SortDirection.Asc;
+        }
+        _ = RefreshList();
+    }
+
+    private void OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        debounceTimer?.Stop();
+        debounceTimer?.Start();
+    }
+
+    private async Task RefreshList()
+    {
+        if (virtualizeRef != null)
+        {
+            await virtualizeRef.RefreshDataAsync();
+        }
+        StateHasChanged();
+    }
+
+    private async Task CopyPath(string path)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", path);
+        }
+        catch { }
+        showCopyNotification = true;
+        notificationTimer?.Stop();
+        notificationTimer?.Start();
+        StateHasChanged();
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+        return path[..(maxLength - 3)] + "...";
+    }
+
+    private static string FormatRelativeTime(DateTime utcTime)
+    {
+        var elapsed = DateTime.UtcNow - utcTime;
+        if (elapsed.TotalMinutes < 1) return "now";
+        if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
+        if (elapsed.TotalHours < 24) return $"{(int)elapsed.TotalHours}h ago";
+        return $"{(int)elapsed.TotalDays}d ago";
+    }
+
+    public void Dispose()
+    {
+        debounceTimer?.Dispose();
+        notificationTimer?.Dispose();
+    }
+}

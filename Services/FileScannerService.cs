@@ -27,46 +27,64 @@ public class FileScannerService
 
     public ScanProgress CurrentProgress => _progress;
 
-    public async Task<ScanProgress> ScanAsync(string rootPath, bool incrementalScan = false)
+    public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false)
     {
         if (_progress.IsRunning)
         {
-            throw new InvalidOperationException("Un scan est déjà en cours");
+            throw new InvalidOperationException("A scan is already running");
+        }
+
+        var pathList = rootPaths.ToList();
+        if (pathList.Count == 0)
+        {
+            throw new InvalidOperationException("No paths configured for this collection");
         }
 
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
-        
+
         _progress = new ScanProgress { IsRunning = true };
         var sw = Stopwatch.StartNew();
 
         try
         {
-            _logger.LogInformation("Démarrage du scan: {Path}, Incrémental: {Incremental}", rootPath, incrementalScan);
+            _logger.LogInformation("Starting scan for collection {CollectionId} with {PathCount} paths, Incremental: {Incremental}",
+                collectionId, pathList.Count, incrementalScan);
 
             if (!incrementalScan)
             {
-                await _db.ClearAsync();
+                await _db.ClearCollectionAsync(collectionId);
             }
 
-            // Phase 1: Énumérer tous les répertoires d'abord (rapide)
-            var directories = await EnumerateDirectoriesAsync(rootPath, ct);
-            _progress.DirectoriesScanned = directories.Count;
-            
-            // Estimer le nombre de fichiers (heuristique)
-            _progress.FilesTotal = directories.Count * 50; // Estimation initiale
+            // Phase 1: Enumerate all directories from all root paths
+            var allDirectories = new List<string>();
+            foreach (var rootPath in pathList)
+            {
+                if (Directory.Exists(rootPath))
+                {
+                    var dirs = await EnumerateDirectoriesAsync(rootPath, ct);
+                    allDirectories.AddRange(dirs);
+                }
+                else
+                {
+                    _logger.LogWarning("Path does not exist: {Path}", rootPath);
+                }
+            }
+
+            _progress.DirectoriesScanned = allDirectories.Count;
+            _progress.FilesTotal = allDirectories.Count * 50; // Initial estimate
             NotifyProgress();
 
-            // Phase 2: Scanner les fichiers en parallèle avec Channel pour back-pressure
+            // Phase 2: Scan files in parallel with Channel for back-pressure
             var fileChannel = Channel.CreateBounded<IndexedFile>(new BoundedChannelOptions(BatchSize * 2)
             {
                 FullMode = BoundedChannelFullMode.Wait
             });
 
-            // Producer: Scanner les fichiers
-            var producerTask = ProduceFilesAsync(directories, fileChannel.Writer, incrementalScan, ct);
-            
-            // Consumer: Écrire en base par batches
+            // Producer: Scan files and tag with collectionId
+            var producerTask = ProduceFilesAsync(allDirectories, fileChannel.Writer, collectionId, incrementalScan, ct);
+
+            // Consumer: Write to DB in batches
             var consumerTask = ConsumeFilesAsync(fileChannel.Reader, ct);
 
             await Task.WhenAll(producerTask, consumerTask);
@@ -77,21 +95,21 @@ public class FileScannerService
             _progress.IsComplete = true;
             NotifyProgress();
 
-            _logger.LogInformation("Scan terminé: {Files} fichiers en {Time}", 
+            _logger.LogInformation("Scan complete: {Files} files in {Time}",
                 _progress.FilesScanned, _progress.Elapsed);
 
             return _progress;
         }
         catch (OperationCanceledException)
         {
-            _logger.LogWarning("Scan annulé");
+            _logger.LogWarning("Scan cancelled");
             _progress.IsRunning = false;
             NotifyProgress();
             throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Erreur pendant le scan");
+            _logger.LogError(ex, "Error during scan");
             _progress.IsRunning = false;
             _progress.ErrorCount++;
             NotifyProgress();
@@ -135,8 +153,9 @@ public class FileScannerService
     }
 
     private async Task ProduceFilesAsync(
-        List<string> directories, 
+        List<string> directories,
         ChannelWriter<IndexedFile> writer,
+        int collectionId,
         bool incrementalScan,
         CancellationToken ct)
     {
@@ -154,7 +173,7 @@ public class FileScannerService
             await Parallel.ForEachAsync(directories, options, async (directory, token) =>
             {
                 _progress.CurrentDirectory = directory;
-                
+
                 IEnumerable<string> files;
                 try
                 {
@@ -162,7 +181,7 @@ public class FileScannerService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning("Impossible d'accéder à {Dir}: {Error}", directory, ex.Message);
+                    _logger.LogWarning("Cannot access {Dir}: {Error}", directory, ex.Message);
                     Interlocked.Increment(ref errors);
                     return;
                 }
@@ -174,15 +193,16 @@ public class FileScannerService
                     try
                     {
                         var fileInfo = new FileInfo(filePath);
-                        
-                        // Skip si incrémental et fichier déjà indexé avec même date
-                        if (incrementalScan && await _db.FileExistsAsync(filePath, fileInfo.LastWriteTimeUtc))
+
+                        // Skip if incremental and file already indexed with same date
+                        if (incrementalScan && await _db.FileExistsInCollectionAsync(filePath, collectionId, fileInfo.LastWriteTimeUtc))
                         {
                             continue;
                         }
 
                         var indexedFile = new IndexedFile
                         {
+                            CollectionId = collectionId,
                             Name = fileInfo.Name,
                             Path = fileInfo.FullName,
                             Directory = fileInfo.DirectoryName ?? "",
@@ -194,7 +214,7 @@ public class FileScannerService
                         };
 
                         await writer.WriteAsync(indexedFile, token);
-                        
+
                         var current = Interlocked.Increment(ref filesScanned);
                         if (current % 100 == 0)
                         {
@@ -206,7 +226,7 @@ public class FileScannerService
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning("Erreur fichier {File}: {Error}", filePath, ex.Message);
+                        _logger.LogWarning("Error on file {File}: {Error}", filePath, ex.Message);
                         Interlocked.Increment(ref errors);
                     }
                 }

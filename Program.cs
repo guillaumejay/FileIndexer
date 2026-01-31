@@ -16,6 +16,7 @@ builder.Services.AddSingleton(appSettings);
 builder.Services.AddSingleton(sp => new IndexDbContext(appSettings.DatabasePath));
 builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddScoped<SearchService>();
+builder.Services.AddScoped<CollectionService>();
 
 var app = builder.Build();
 

@@ -1,0 +1,177 @@
+@using System.IO
+
+<div class="modal-overlay" @onclick="OnCancel">
+    <div class="modal-content modal-large" @onclick:stopPropagation>
+        <div class="modal-header">
+            <h2>Select Folder</h2>
+            <button class="modal-close" @onclick="OnCancel">✕</button>
+        </div>
+        <div class="modal-body">
+            <div class="current-path-bar">
+                <button class="btn-icon-sm" @onclick="GoUp" disabled="@(currentPath == null)" title="Go up">⬆️</button>
+                <span class="current-path">@(currentPath ?? "Computer")</span>
+            </div>
+
+            <div class="folder-list">
+                @if (currentPath == null)
+                {
+                    @* Show drives *@
+                    @foreach (var drive in drives)
+                    {
+                        <div class="folder-item" @ondblclick="() => NavigateTo(drive)">
+                            <span class="folder-icon">💾</span>
+                            <span class="folder-name">@drive</span>
+                        </div>
+                    }
+                }
+                else
+                {
+                    @foreach (var dir in directories)
+                    {
+                        <div class="folder-item @(selectedFolder == dir ? "selected" : "")"
+                             @onclick="() => SelectFolder(dir)"
+                             @ondblclick="() => NavigateTo(dir)">
+                            <span class="folder-icon">📁</span>
+                            <span class="folder-name">@Path.GetFileName(dir)</span>
+                        </div>
+                    }
+                    @if (directories.Count == 0)
+                    {
+                        <div class="empty-folder">No subfolders</div>
+                    }
+                }
+            </div>
+
+            @if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div class="browser-error">@errorMessage</div>
+            }
+
+            <div class="selected-path-bar">
+                <label>Selected:</label>
+                <input type="text" @bind="selectedFolder" @bind:event="oninput" placeholder="Select a folder or type a path" />
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn-secondary" @onclick="OnCancel">Cancel</button>
+                <button class="btn-primary" @onclick="Confirm" disabled="@string.IsNullOrWhiteSpace(selectedFolder)">Select</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public string? InitialPath { get; set; }
+
+    private string? currentPath;
+    private string? selectedFolder;
+    private List<string> drives = new();
+    private List<string> directories = new();
+    private string? errorMessage;
+
+    protected override void OnInitialized()
+    {
+        LoadDrives();
+
+        if (!string.IsNullOrEmpty(InitialPath) && Directory.Exists(InitialPath))
+        {
+            currentPath = InitialPath;
+            selectedFolder = InitialPath;
+            LoadDirectories();
+        }
+    }
+
+    private void LoadDrives()
+    {
+        try
+        {
+            drives = DriveInfo.GetDrives()
+                .Where(d => d.IsReady)
+                .Select(d => d.RootDirectory.FullName)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading drives: {ex.Message}";
+        }
+    }
+
+    private void LoadDirectories()
+    {
+        directories.Clear();
+        errorMessage = null;
+
+        if (string.IsNullOrEmpty(currentPath)) return;
+
+        try
+        {
+            directories = Directory.GetDirectories(currentPath)
+                .Where(d => !IsHiddenOrSystem(d))
+                .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            errorMessage = "Access denied to this folder.";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    private bool IsHiddenOrSystem(string path)
+    {
+        try
+        {
+            var attrs = File.GetAttributes(path);
+            return (attrs & FileAttributes.Hidden) != 0 || (attrs & FileAttributes.System) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void NavigateTo(string path)
+    {
+        currentPath = path;
+        selectedFolder = path;
+        LoadDirectories();
+    }
+
+    private void SelectFolder(string path)
+    {
+        selectedFolder = path;
+    }
+
+    private void GoUp()
+    {
+        if (currentPath == null) return;
+
+        var parent = Directory.GetParent(currentPath);
+        if (parent == null)
+        {
+            // At root of a drive, go back to drive list
+            currentPath = null;
+            selectedFolder = null;
+            directories.Clear();
+        }
+        else
+        {
+            currentPath = parent.FullName;
+            selectedFolder = currentPath;
+            LoadDirectories();
+        }
+    }
+
+    private async Task Confirm()
+    {
+        if (!string.IsNullOrWhiteSpace(selectedFolder))
+        {
+            await OnSelect.InvokeAsync(selectedFolder);
+        }
+    }
+}

@@ -14,10 +14,10 @@ public class SearchService
         _logger = logger;
     }
 
-    public async Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0)
+    public async Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
     {
-        _logger.LogDebug("Recherche: {Query}", query);
-        return await _db.SearchAsync(query, limit, offset);
+        _logger.LogDebug("Search: {Query}, Collections: {Collections}", query, collectionIds != null ? string.Join(",", collectionIds) : "all");
+        return await _db.SearchAsync(query, limit, offset, collectionIds);
     }
 
     public async Task<SearchResult> SearchWithSortAsync(
@@ -25,20 +25,23 @@ public class SearchService
         SortColumn sortColumn,
         SortDirection sortDirection,
         int limit = 100,
-        int offset = 0)
+        int offset = 0,
+        IEnumerable<int>? collectionIds = null)
     {
-        _logger.LogDebug("Recherche avec tri: {Query}, {Column} {Direction}", query, sortColumn, sortDirection);
-        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset);
+        _logger.LogDebug("Search with sort: {Query}, {Column} {Direction}, Collections: {Collections}",
+            query, sortColumn, sortDirection, collectionIds != null ? string.Join(",", collectionIds) : "all");
+        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset, collectionIds);
     }
 
-    public async Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0)
+    public async Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
     {
-        _logger.LogDebug("Recherche par extension: {Extension}", extension);
-        return await _db.SearchByExtensionAsync(extension, limit, offset);
+        _logger.LogDebug("Search by extension: {Extension}, Collections: {Collections}",
+            extension, collectionIds != null ? string.Join(",", collectionIds) : "all");
+        return await _db.SearchByExtensionAsync(extension, limit, offset, collectionIds);
     }
 
-    public async Task<IndexStats> GetStatsAsync()
+    public async Task<IndexStats> GetStatsAsync(IEnumerable<int>? collectionIds = null)
     {
-        return await _db.GetStatsAsync();
+        return await _db.GetStatsAsync(collectionIds);
     }
 }

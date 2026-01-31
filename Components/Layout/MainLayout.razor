@@ -1,3 +1,25 @@
 @inherits LayoutComponentBase
+@inject IJSRuntime JS
 
 @Body
+
+@code {
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var theme = await JS.InvokeAsync<string>("localStorage.getItem", "theme");
+                if (theme == "light")
+                {
+                    await JS.InvokeVoidAsync("eval", "document.body.classList.add('light-theme')");
+                }
+            }
+            catch
+            {
+                // Ignore errors during prerendering
+            }
+        }
+    }
+}
