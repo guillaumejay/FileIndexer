@@ -1,0 +1,34 @@
+using FileIndexer;
+using FileIndexer.Components;
+using FileIndexer.Data;
+using FileIndexer.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Configuration
+var appSettings = builder.Configuration.GetSection("AppSettings").Get<AppSettings>() ?? new AppSettings();
+
+// Services
+builder.Services.AddRazorComponents()
+    .AddInteractiveServerComponents();
+
+builder.Services.AddSingleton(appSettings);
+builder.Services.AddSingleton(sp => new IndexDbContext(appSettings.DatabasePath));
+builder.Services.AddSingleton<FileScannerService>();
+builder.Services.AddScoped<SearchService>();
+
+var app = builder.Build();
+
+if (!app.Environment.IsDevelopment())
+{
+    app.UseExceptionHandler("/Error");
+    app.UseHsts();
+}
+
+app.UseStaticFiles();
+app.UseAntiforgery();
+
+app.MapRazorComponents<App>()
+    .AddInteractiveServerRenderMode();
+
+app.Run();

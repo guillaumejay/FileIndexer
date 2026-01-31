@@ -1,0 +1,51 @@
+# Build outputs
+bin/
+obj/
+publish/
+
+# .NET
+*.user
+*.userosscache
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+
+# NuGet
+*.nupkg
+.nuget/
+packages/
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+fileindex.db
+
+# IDE - Visual Studio
+.vs/
+*.sln.docstates
+
+# IDE - VS Code
+.vscode/
+
+# IDE - JetBrains Rider
+.idea/
+*.sln.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# User secrets
+secrets.json
+appsettings.*.local.json
+
+# Publish profiles
+PublishProfiles/

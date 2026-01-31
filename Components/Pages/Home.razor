@@ -1,0 +1,386 @@
+@page "/"
+@inject FileScannerService Scanner
+@inject SearchService Search
+@inject AppSettings Settings
+@inject IJSRuntime JS
+@implements IDisposable
+@rendermode Microsoft.AspNetCore.Components.Web.RenderMode.InteractiveServer
+
+<div class="page-container" @onkeydown="OnKeyDown" tabindex="0">
+    <!-- Header with title, search, buttons and stats -->
+    <header class="app-header-bar">
+        <div class="header-row">
+            <h1 class="app-title">File Indexer</h1>
+            <div class="search-wrapper">
+                <input type="text"
+                       class="search-input"
+                       @bind="searchQuery"
+                       @bind:event="oninput"
+                       @onkeyup="OnSearchKeyUp"
+                       placeholder="Rechercher..." />
+            </div>
+            <div class="header-buttons">
+                <button class="btn-icon" @onclick="() => showModal = true" title="Indexation">
+                    ⚙️
+                </button>
+                <button class="btn-icon" @onclick="ToggleTheme" title="Changer de thème">
+                    @(isLightTheme ? "🌙" : "☀️")
+                </button>
+            </div>
+        </div>
+        <div class="stats-row">
+            <span>📋 @totalCount.ToString("N0") fichiers</span>
+            @if (stats != null)
+            {
+                <span class="stats-divider">|</span>
+                <span>📊 Index: @stats.TotalFiles.ToString("N0")</span>
+                <span class="stats-divider">|</span>
+                <span>💾 @stats.TotalSizeFormatted</span>
+                @if (stats.LastIndexedAtUtc.HasValue)
+                {
+                    <span class="stats-divider">|</span>
+                    <span>⏱️ @FormatRelativeTime(stats.LastIndexedAtUtc.Value)</span>
+                }
+            }
+        </div>
+    </header>
+
+    <!-- File List -->
+    <div class="file-list-container">
+        <table class="file-list-table">
+            <thead>
+                <tr>
+                    <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
+                        Nom <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
+                        Répertoire <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
+                        Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
+                        Taille <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
+                        Modifié <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize @ref="virtualizeRef" ItemsProvider="LoadFilesAsync" ItemSize="22" OverscanCount="20">
+                    <ItemContent>
+                        <tr @onclick="() => CopyPath(context.Path)" title="Cliquer pour copier le chemin">
+                            <td class="file-name">@context.Name</td>
+                            <td class="file-dir" title="@context.Directory">@TruncatePath(context.Directory, 50)</td>
+                            <td class="file-ext">@context.Extension</td>
+                            <td class="file-size">@context.SizeFormatted</td>
+                            <td class="file-date">@context.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    </ItemContent>
+                    <Placeholder>
+                        <tr>
+                            <td colspan="5" style="color: var(--text-secondary);">Chargement...</td>
+                        </tr>
+                    </Placeholder>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@* Modal d'indexation *@
+@if (showModal)
+{
+    <div class="modal-overlay" @onclick="CloseModal">
+        <div class="modal-content" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Indexation</h2>
+                <button class="modal-close" @onclick="CloseModal">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="scan-config">
+                    <label>
+                        Chemin à indexer :
+                        <input type="text" @bind="scanPath" @bind:event="oninput"
+                               placeholder="Ex: /mnt/nas ou \\serveur\partage"
+                               disabled="@isScanning" />
+                    </label>
+
+                    <div class="scan-options">
+                        <label class="checkbox-label">
+                            <input type="checkbox" @bind="incrementalScan" disabled="@isScanning" />
+                            Scan incrémental (ne réindexe que les fichiers modifiés)
+                        </label>
+                    </div>
+
+                    <div class="scan-actions">
+                        @if (!isScanning)
+                        {
+                            <button class="btn-primary" @onclick="StartScan" disabled="@string.IsNullOrWhiteSpace(scanPath)">
+                                ▶️ Démarrer le scan
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="btn-danger" @onclick="CancelScan">
+                                ⏹️ Annuler
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                @if (progress != null && (isScanning || progress.IsComplete))
+                {
+                    <div class="progress-section">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" style="width: @(Math.Min(progress.ProgressPercent, 100))%"></div>
+                        </div>
+                        <div class="progress-stats">
+                            <span>📄 @progress.FilesScanned.ToString("N0") fichiers</span>
+                            <span>📁 @progress.DirectoriesScanned.ToString("N0") répertoires</span>
+                            <span>⏱️ @progress.Elapsed.ToString(@"mm\:ss")</span>
+                            @if (progress.ErrorCount > 0)
+                            {
+                                <span class="error-count">⚠️ @progress.ErrorCount erreurs</span>
+                            }
+                            @if (progress.IsComplete)
+                            {
+                                <span class="success">✅ Terminé</span>
+                            }
+                        </div>
+                        @if (!string.IsNullOrEmpty(progress.CurrentDirectory) && isScanning)
+                        {
+                            <div class="current-dir">@TruncatePath(progress.CurrentDirectory, 60)</div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@if (showCopyNotification)
+{
+    <div class="notification">Chemin copié !</div>
+}
+
+@code {
+    // État de recherche et tri
+    private string searchQuery = "";
+    private SortColumn sortColumn = SortColumn.Name;
+    private SortDirection sortDirection = SortDirection.Asc;
+    private int totalCount = 0;
+
+    // État de scan
+    private string scanPath = "";
+    private bool incrementalScan = false;
+    private bool isScanning = false;
+    private ScanProgress? progress;
+    private IndexStats? stats;
+
+    // État UI
+    private bool showModal = false;
+    private bool showCopyNotification = false;
+    private bool isLightTheme = false;
+
+    // Références et timers
+    private Virtualize<IndexedFile>? virtualizeRef;
+    private System.Timers.Timer? debounceTimer;
+    private System.Timers.Timer? notificationTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        scanPath = Settings.DefaultScanPath;
+        Scanner.OnProgressChanged += OnProgressChanged;
+
+        debounceTimer = new System.Timers.Timer(200);
+        debounceTimer.AutoReset = false;
+        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(RefreshList);
+
+        notificationTimer = new System.Timers.Timer(2000);
+        notificationTimer.AutoReset = false;
+        notificationTimer.Elapsed += (s, e) => InvokeAsync(() => { showCopyNotification = false; StateHasChanged(); });
+
+        await LoadStats();
+        await LoadTheme();
+    }
+
+    private async Task LoadTheme()
+    {
+        try
+        {
+            var theme = await JS.InvokeAsync<string>("localStorage.getItem", "theme");
+            isLightTheme = theme == "light";
+        }
+        catch
+        {
+            // Ignore errors during prerendering
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        isLightTheme = !isLightTheme;
+        var theme = isLightTheme ? "light" : "dark";
+        await JS.InvokeVoidAsync("localStorage.setItem", "theme", theme);
+        if (isLightTheme)
+        {
+            await JS.InvokeVoidAsync("eval", "document.body.classList.add('light-theme')");
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("eval", "document.body.classList.remove('light-theme')");
+        }
+    }
+
+    private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
+    {
+        var effectiveSortColumn = sortColumn;
+        var effectiveSortDirection = sortDirection;
+
+        // Si recherche active et tri par défaut, utiliser le rank FTS
+        if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc)
+        {
+            effectiveSortColumn = SortColumn.Rank;
+            effectiveSortDirection = SortDirection.Asc;
+        }
+
+        var result = await Search.SearchWithSortAsync(
+            searchQuery,
+            effectiveSortColumn,
+            effectiveSortDirection,
+            request.Count,
+            request.StartIndex);
+
+        totalCount = result.TotalCount;
+        await InvokeAsync(StateHasChanged);
+
+        return new ItemsProviderResult<IndexedFile>(result.Files, result.TotalCount);
+    }
+
+    private async Task LoadStats()
+    {
+        stats = await Search.GetStatsAsync();
+    }
+
+    private void OnProgressChanged(ScanProgress p)
+    {
+        progress = p;
+        InvokeAsync(StateHasChanged);
+    }
+
+    private async Task StartScan()
+    {
+        if (string.IsNullOrWhiteSpace(scanPath)) return;
+
+        isScanning = true;
+        progress = new ScanProgress { IsRunning = true };
+
+        try
+        {
+            await Scanner.ScanAsync(scanPath, incrementalScan);
+            await LoadStats();
+            await RefreshList();
+        }
+        catch (OperationCanceledException)
+        {
+            // Scan annulé
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+        }
+        finally
+        {
+            isScanning = false;
+        }
+    }
+
+    private void CancelScan()
+    {
+        Scanner.Cancel();
+        isScanning = false;
+    }
+
+    private void SetSort(SortColumn column)
+    {
+        if (sortColumn == column)
+        {
+            sortDirection = sortDirection == SortDirection.Asc ? SortDirection.Desc : SortDirection.Asc;
+        }
+        else
+        {
+            sortColumn = column;
+            // Défaut: descendant pour taille et date, ascendant pour le reste
+            sortDirection = column is SortColumn.Size or SortColumn.ModifiedAt
+                ? SortDirection.Desc
+                : SortDirection.Asc;
+        }
+        _ = RefreshList();
+    }
+
+    private void OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        debounceTimer?.Stop();
+        debounceTimer?.Start();
+    }
+
+    private async Task RefreshList()
+    {
+        if (virtualizeRef != null)
+        {
+            await virtualizeRef.RefreshDataAsync();
+        }
+        StateHasChanged();
+    }
+
+    private void OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Escape" && showModal)
+        {
+            CloseModal();
+        }
+    }
+
+    private void CloseModal()
+    {
+        showModal = false;
+    }
+
+    private void CopyPath(string path)
+    {
+        showCopyNotification = true;
+        notificationTimer?.Stop();
+        notificationTimer?.Start();
+        StateHasChanged();
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+
+        return path[..(maxLength - 3)] + "...";
+    }
+
+    private static string FormatRelativeTime(DateTime utcTime)
+    {
+        var elapsed = DateTime.UtcNow - utcTime;
+
+        if (elapsed.TotalMinutes < 1)
+            return "maintenant";
+        if (elapsed.TotalMinutes < 60)
+            return $"il y a {(int)elapsed.TotalMinutes} min";
+        if (elapsed.TotalHours < 24)
+            return $"il y a {(int)elapsed.TotalHours}h";
+        return $"il y a {(int)elapsed.TotalDays}j";
+    }
+
+    public void Dispose()
+    {
+        Scanner.OnProgressChanged -= OnProgressChanged;
+        debounceTimer?.Dispose();
+        notificationTimer?.Dispose();
+    }
+}

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File Indexer</title>
+    <base href="/" />
+    <link rel="stylesheet" href="css/app.css" />
+    <script>
+        (function() {
+            var theme = localStorage.getItem('theme');
+            if (theme === 'light') {
+                document.documentElement.classList.add('light-theme-pending');
+            }
+        })();
+    </script>
+    <HeadOutlet />
+</head>
+<body>
+    <script>
+        if (document.documentElement.classList.contains('light-theme-pending')) {
+            document.body.classList.add('light-theme');
+            document.documentElement.classList.remove('light-theme-pending');
+        }
+    </script>
+    <Routes />
+    <script src="_framework/blazor.web.js"></script>
+</body>
+</html>
