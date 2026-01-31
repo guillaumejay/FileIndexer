@@ -1,41 +1,41 @@
 # File Indexer
 
-Indexeur de fichiers haute performance pour NAS avec interface web.
+High-performance file indexer for NAS drives with web interface.
 
-## Fonctionnalités
+## Features
 
-- **Scan parallèle** : Indexation de 200k+ fichiers en quelques minutes
-- **Recherche instantanée** : FTS5 avec temps de réponse < 50ms
-- **Multi-plateforme** : Windows, Linux, macOS
-- **Interface web moderne** : Blazor Server avec progression en temps réel
+- **Parallel scanning**: Index 200k+ files in minutes
+- **Instant search**: FTS5 with < 50ms response time
+- **Cross-platform**: Windows, Linux, macOS
+- **Modern web interface**: Blazor Server with real-time progress
 
-## Prérequis
+## Prerequisites
 
 - .NET 10 SDK
 
 ## Installation
 
 ```bash
-# Cloner/copier le projet
+# Clone/copy the project
 cd FileIndexer
 
-# Restaurer les packages
+# Restore packages
 dotnet restore
 
-# Lancer l'application
+# Run the application
 dotnet run
 ```
 
-L'application sera accessible sur http://localhost:5000
+The application will be available at http://localhost:5000
 
 ## Configuration
 
-Modifier `appsettings.json` :
+Edit `appsettings.json`:
 
 ```json
 {
   "AppSettings": {
-    "DefaultScanPath": "/chemin/vers/nas",
+    "DefaultScanPath": "/path/to/nas",
     "DatabasePath": "fileindex.db",
     "ScanParallelism": 64,
     "ScanBatchSize": 500
@@ -43,51 +43,51 @@ Modifier `appsettings.json` :
 }
 ```
 
-### Paramètres
+### Parameters
 
-| Paramètre | Description | Défaut |
-|-----------|-------------|--------|
-| `DefaultScanPath` | Chemin pré-rempli dans l'interface | vide |
-| `DatabasePath` | Emplacement de la base SQLite | `fileindex.db` |
-| `ScanParallelism` | Nombre de threads parallèles | 64 |
-| `ScanBatchSize` | Taille des lots d'insertion en DB | 500 |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `DefaultScanPath` | Pre-filled path in the interface | empty |
+| `DatabasePath` | SQLite database location | `fileindex.db` |
+| `ScanParallelism` | Number of parallel threads | 64 |
+| `ScanBatchSize` | Batch size for DB inserts | 500 |
 
-## Chemins supportés
+## Supported Paths
 
 ### Windows
 ```
 C:\Users\...
-\\serveur\partage
-Z:\montage-nas
+\\server\share
+Z:\nas-mount
 ```
 
 ### Linux / macOS
 ```
 /mnt/nas
-/media/partage
+/media/share
 /Volumes/NAS
 ```
 
-## Utilisation
+## Usage
 
-1. **Configurer le chemin** : Entrer le chemin du NAS dans le champ de texte
-2. **Lancer le scan** : Cliquer sur "Démarrer le scan"
-3. **Rechercher** : Utiliser la barre de recherche (recherche en temps réel)
+1. **Configure the path**: Enter the NAS path in the text field
+2. **Start the scan**: Click "Start scan"
+3. **Search**: Use the search bar (real-time search)
 
-### Recherche
+### Search
 
-- Recherche par nom de fichier avec préfixe (ex: `rapport` trouve `rapport-2024.pdf`)
-- Cliquer sur une extension dans les stats pour filtrer
-- Cliquer sur une ligne pour copier le chemin
+- Search by filename with prefix matching (e.g., `report` finds `report-2024.pdf`)
+- Click on an extension in the stats to filter
+- Click on a row to copy the path
 
 ## Architecture
 
 ```
 FileIndexer/
-├── Models/              # Modèles de données
-├── Data/                # Accès SQLite + FTS5
-├── Services/            # Scanner + Recherche
-├── Components/          # Interface Blazor
+├── Models/              # Data models
+├── Data/                # SQLite + FTS5 access
+├── Services/            # Scanner + Search
+├── Components/          # Blazor interface
 │   ├── Layout/
 │   └── Pages/
 └── wwwroot/css/         # Styles
@@ -95,15 +95,15 @@ FileIndexer/
 
 ## Performance
 
-| Volume | Temps de scan* | Temps de recherche |
-|--------|---------------|-------------------|
-| 50k fichiers | ~2 min | < 20ms |
-| 200k fichiers | ~8 min | < 50ms |
-| 500k fichiers | ~20 min | < 100ms |
+| Volume | Scan time* | Search time |
+|--------|-----------|-------------|
+| 50k files | ~2 min | < 20ms |
+| 200k files | ~8 min | < 50ms |
+| 500k files | ~20 min | < 100ms |
 
-*Dépend de la latence réseau du NAS
+*Depends on NAS network latency
 
-## Publication
+## Publishing
 
 ```bash
 # Windows
@@ -119,6 +119,6 @@ dotnet publish -c Release -r osx-x64 --self-contained -o ./publish/osx
 dotnet publish -c Release -r osx-arm64 --self-contained -o ./publish/osx-arm
 ```
 
-## Licence
+## License
 
 MIT
