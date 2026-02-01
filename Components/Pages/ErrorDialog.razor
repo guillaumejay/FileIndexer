@@ -1,0 +1,22 @@
+<div class="modal-overlay" @onclick="Close">
+    <div class="modal-content" @onclick:stopPropagation>
+        <div class="modal-header modal-header-error">
+            <h2>Erreur</h2>
+            <button class="modal-close" @onclick="Close">✕</button>
+        </div>
+        <div class="modal-body">
+            <p class="error-message">@Message</p>
+
+            <div class="modal-actions">
+                <button class="btn-primary" @onclick="Close">OK</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private async Task Close() => await OnClose.InvokeAsync();
+}

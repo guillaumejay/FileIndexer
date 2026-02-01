@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using FileIndexer;
 using FileIndexer.Components;
 using FileIndexer.Data;
@@ -17,6 +18,25 @@ builder.Services.AddSingleton(sp => new IndexDbContext(appSettings.DatabasePath)
 builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddScoped<SearchService>();
 builder.Services.AddScoped<CollectionService>();
+
+// Platform-specific services
+// Use FallbackFolderPicker on all platforms (custom UI in browser)
+builder.Services.AddSingleton<IFolderPickerService, FallbackFolderPicker>();
+
+if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+{
+    builder.Services.AddSingleton<ITrashService, WindowsTrashService>();
+}
+else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+{
+    builder.Services.AddSingleton<ITrashService, MacTrashService>();
+}
+else
+{
+    builder.Services.AddSingleton<ITrashService, LinuxTrashService>();
+}
+
+builder.Services.AddSingleton<FileOperationsService>();
 
 var app = builder.Build();
 

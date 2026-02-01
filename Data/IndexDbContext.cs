@@ -398,6 +398,42 @@ public class IndexDbContext : IDisposable
         _connection?.Dispose();
     }
 
+    // File operations methods
+    public async Task<IndexedFile?> GetFileByIdAsync(long id)
+    {
+        var dto = await _connection.QuerySingleOrDefaultAsync<IndexedFileDto>(
+            "SELECT * FROM files WHERE id = @Id", new { Id = id });
+        return dto == null ? null : MapToIndexedFile(dto);
+    }
+
+    public async Task<List<IndexedFile>> GetFilesByIdsAsync(IEnumerable<long> ids)
+    {
+        var idList = ids.ToList();
+        if (!idList.Any()) return new List<IndexedFile>();
+
+        var dtos = await _connection.QueryAsync<IndexedFileDto>(
+            $"SELECT * FROM files WHERE id IN ({string.Join(",", idList)})");
+        return dtos.Select(MapToIndexedFile).ToList();
+    }
+
+    public async Task UpdateFilePathAsync(long id, string newPath, string newDirectory, string newName, string newExtension)
+    {
+        await _connection.ExecuteAsync("""
+            UPDATE files
+            SET path = @Path, directory = @Directory, name = @Name, extension = @Extension
+            WHERE id = @Id
+            """, new { Id = id, Path = newPath, Directory = newDirectory, Name = newName, Extension = newExtension });
+    }
+
+    public async Task DeleteFilesByIdsAsync(IEnumerable<long> ids)
+    {
+        var idList = ids.ToList();
+        if (!idList.Any()) return;
+
+        await _connection.ExecuteAsync(
+            $"DELETE FROM files WHERE id IN ({string.Join(",", idList)})");
+    }
+
     // Collection methods
     public async Task<List<Collection>> GetCollectionsAsync()
     {

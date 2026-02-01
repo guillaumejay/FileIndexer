@@ -1,0 +1,31 @@
+@using FileIndexer.Services
+
+<div class="modal-overlay" @onclick="Cancel">
+    <div class="modal-content" @onclick:stopPropagation>
+        <div class="modal-header">
+            <h2>Conflit de fichier</h2>
+            <button class="modal-close" @onclick="Cancel">✕</button>
+        </div>
+        <div class="modal-body">
+            <p>Le fichier <strong>@FileName</strong> existe déjà dans le dossier de destination.</p>
+            <p class="conflict-path">@DestinationPath</p>
+            <p>Que souhaitez-vous faire ?</p>
+
+            <div class="conflict-actions">
+                <button class="btn-primary" @onclick="Replace">Remplacer</button>
+                <button class="btn-secondary" @onclick="KeepBoth">Garder les deux</button>
+                <button class="btn-secondary" @onclick="Cancel">Annuler</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public string FileName { get; set; } = "";
+    [Parameter] public string DestinationPath { get; set; } = "";
+    [Parameter] public EventCallback<ConflictResolution> OnResolve { get; set; }
+
+    private async Task Replace() => await OnResolve.InvokeAsync(ConflictResolution.Replace);
+    private async Task KeepBoth() => await OnResolve.InvokeAsync(ConflictResolution.KeepBoth);
+    private async Task Cancel() => await OnResolve.InvokeAsync(ConflictResolution.Cancel);
+}
