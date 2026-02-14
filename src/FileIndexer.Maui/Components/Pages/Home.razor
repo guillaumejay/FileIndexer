@@ -1,0 +1,869 @@
+@page "/"
+@using FileIndexer.Models
+@inject SearchService Search
+@inject CollectionService Collections
+@inject ConfigExportService ConfigExportSvc
+@inject DatabasePathService DbPathService
+@inject IMauiFolderPickerService FolderPicker
+
+<div class="view-container">
+    @* Header with search and actions *@
+    <div class="search-header">
+        <div class="search-wrapper">
+            <input type="text"
+                   class="search-input"
+                   @bind="searchQuery"
+                   @bind:event="oninput"
+                   @onkeyup="OnSearchKeyUp"
+                   placeholder="Search files..." />
+        </div>
+
+        @if (IsDesktop)
+        {
+            <button class="btn-icon" @onclick="OpenScanDialog" title="Scan">
+                🔄
+            </button>
+        }
+        <button class="btn-icon" @onclick="OpenSettings" title="Settings">
+            ⚙️
+        </button>
+    </div>
+
+    @* Collection filter *@
+    @if (availableCollections.Count > 1)
+    {
+        <div class="collection-filter">
+            @foreach (var col in availableCollections)
+            {
+                <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
+                    <input type="checkbox"
+                           checked="@selectedCollectionIds.Contains(col.Id)"
+                           @onchange="() => ToggleCollection(col.Id)" />
+                    @col.Name
+                </label>
+            }
+        </div>
+    }
+
+    @* File list *@
+    <div class="file-list-container">
+        <table class="file-list-table">
+            <thead>
+                <tr>
+                    <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
+                        Name <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortAsc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
+                        Directory <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortAsc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
+                        Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortAsc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
+                        Size <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortAsc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
+                        Modified <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortAsc ? "▲" : "▼") : "")</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (isLoading)
+                {
+                    <tr>
+                        <td colspan="5" class="loading">Loading...</td>
+                    </tr>
+                }
+                else if (files.Count == 0)
+                {
+                    <tr>
+                        <td colspan="5" class="empty-state">
+                            @if (string.IsNullOrEmpty(searchQuery))
+                            {
+                                <span>Enter a search term to find files</span>
+                            }
+                            else
+                            {
+                                <span>No files found</span>
+                            }
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (var file in files)
+                    {
+                        var isSelected = selectedFileIds.Contains(file.Id);
+                        <tr class="@(isSelected ? "selected" : "")"
+                            @onclick="e => OnRowClick(e, file)"
+                            @onclick:stopPropagation
+                            @oncontextmenu="e => OnRowContextMenu(e, file)"
+                            @oncontextmenu:preventDefault
+                            @ondblclick="() => OnRowDoubleClick(file)">
+                            <td class="file-name">@file.Name</td>
+                            <td class="file-dir" title="@file.Directory">@file.Directory</td>
+                            <td class="file-ext">@file.Extension</td>
+                            <td class="file-size">@file.SizeFormatted</td>
+                            <td class="file-date">@file.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    @* Stats bar *@
+    <div class="stats-row">
+        <span>📋 @totalCount.ToString("N0") files</span>
+        @if (selectedFileIds.Count > 0)
+        {
+            <span class="stats-divider">|</span>
+            <span class="selection-count">✓ @selectedFileIds.Count selected</span>
+        }
+        @if (!string.IsNullOrEmpty(searchQuery))
+        {
+            <span class="stats-divider">|</span>
+            <span>🔍 "@searchQuery"</span>
+        }
+    </div>
+
+    @if (!IsDesktop)
+    {
+        <div class="long-press-hint">
+            Long-press a row to copy the file path
+        </div>
+    }
+</div>
+
+@* Context menu (desktop only) *@
+@if (IsDesktop && contextMenuVisible)
+{
+    <div class="context-menu" style="left: @(contextMenuX)px; top: @(contextMenuY)px;" @onclick:stopPropagation>
+        @if (selectedFileIds.Count == 1)
+        {
+            <div class="context-menu-item" @onclick="OpenSelectedFile">Open</div>
+            <div class="context-menu-item" @onclick="OpenSelectedFolder">Open Folder</div>
+            <div class="context-menu-item" @onclick="StartRename">Rename</div>
+        }
+        <div class="context-menu-item" @onclick="CopySelectedPaths">Copy Path</div>
+        @if (selectedFileIds.Count > 0)
+        {
+            <div class="context-menu-item" @onclick="StartCopy">Copy to...</div>
+            <div class="context-menu-item" @onclick="StartMove">Move to...</div>
+            <div class="context-menu-item context-menu-danger" @onclick="DeleteSelected">Delete</div>
+        }
+    </div>
+}
+
+@* Settings overlay *@
+@if (showSettings)
+{
+    <div class="settings-overlay" @onclick="CloseSettings">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Database</h3>
+                @if (DbPathService.HasDatabasePath())
+                {
+                    <div class="current-db-path">@DbPathService.GetDatabasePath()</div>
+                }
+                else
+                {
+                    <div class="current-db-path no-db-path">No database selected</div>
+                }
+                <button class="btn-secondary" @onclick="ChangeDatabase">
+                    @(IsDesktop ? "Change Database" : "Select Database")
+                </button>
+                @if (IsDesktop)
+                {
+                    <button class="btn-primary" style="margin-left: 0.5rem;" @onclick="CreateNewDatabase">
+                        Create New
+                    </button>
+                }
+            </div>
+            <div class="settings-section" style="margin-top: 1rem;">
+                <h3>Configuration</h3>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn-secondary" @onclick="ExportConfig">Export</button>
+                    <button class="btn-secondary" @onclick="ImportConfig">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Import Preview Dialog *@
+@if (showImportPreview && importData != null)
+{
+    <div class="settings-overlay" @onclick="CancelImport">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Import Configuration</h3>
+                <p><strong>@importData.Collections.Count</strong> collection(s) found.</p>
+                @if (importData.Settings != null)
+                {
+                    <p>Settings included (will be applied).</p>
+                }
+
+                @if (importHasCollisions)
+                {
+                    <p class="warning" style="color: var(--warning);">Some names already exist:</p>
+                    <div style="display: flex; gap: 0.5rem; margin: 0.5rem 0;">
+                        <button class="@(importStrategy == ImportCollisionStrategy.Skip ? "btn-primary" : "btn-secondary")"
+                                @onclick="() => importStrategy = ImportCollisionStrategy.Skip">
+                            Skip
+                        </button>
+                        <button class="@(importStrategy == ImportCollisionStrategy.Rename ? "btn-primary" : "btn-secondary")"
+                                @onclick="() => importStrategy = ImportCollisionStrategy.Rename">
+                            Auto-rename
+                        </button>
+                    </div>
+                }
+
+                <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                    <button class="btn-secondary" @onclick="CancelImport">Cancel</button>
+                    <button class="btn-primary" @onclick="DoImport">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Import Result Dialog *@
+@if (showImportResult && importResult != null)
+{
+    <div class="settings-overlay" @onclick="CloseImportResult">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Import Complete</h3>
+                <p><strong>@importResult.Imported</strong> imported, <strong>@importResult.Skipped</strong> skipped, <strong>@importResult.Renamed</strong> renamed.</p>
+                @if (importResult.Details.Count > 0)
+                {
+                    <ul style="font-size: 0.8125rem; color: var(--text-secondary); padding-left: 1.25rem;">
+                        @foreach (var detail in importResult.Details)
+                        {
+                            <li>@detail</li>
+                        }
+                    </ul>
+                }
+                <button class="btn-primary" style="margin-top: 0.5rem;" @onclick="CloseImportResult">OK</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Scan dialog (desktop only) *@
+@if (IsDesktop && showScanDialog)
+{
+    <div class="settings-overlay" @onclick="CloseScanDialog">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Scan Directory</h3>
+                <div class="scan-path-row">
+                    <input type="text" class="scan-path-input" @bind="scanPath" placeholder="Path to scan..." />
+                    <button class="btn-secondary" @onclick="BrowseForScanPath">Browse</button>
+                </div>
+                @if (isScanning)
+                {
+                    <div class="scan-progress">
+                        <div class="progress-bar-container">
+                            <div class="progress-bar" style="width: @(scanProgress.Percentage)%"></div>
+                        </div>
+                        <div class="progress-text">
+                            @scanProgress.ProcessedFiles.ToString("N0") / @scanProgress.TotalFiles.ToString("N0") files
+                        </div>
+                    </div>
+                    <button class="btn-danger" @onclick="CancelScan">Cancel</button>
+                }
+                else
+                {
+                    <button class="btn-primary" @onclick="StartScan" disabled="@string.IsNullOrEmpty(scanPath)">
+                        Start Scan
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@* Toast notification *@
+@if (showToast)
+{
+    <div class="toast">@toastMessage</div>
+}
+
+@* Error dialog *@
+@if (showError)
+{
+    <div class="settings-overlay" @onclick="CloseError">
+        <div class="settings-screen error-dialog" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3 style="color: var(--danger);">Error</h3>
+                <p>@errorMessage</p>
+                <button class="btn-primary" @onclick="CloseError">OK</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // Platform detection
+#if DESKTOP
+    private bool IsDesktop => true;
+    [Inject] private FileScannerService Scanner { get; set; } = default!;
+    [Inject] private FileOperationsService FileOps { get; set; } = default!;
+#else
+    private bool IsDesktop => false;
+#endif
+
+    // Search state
+    private string searchQuery = "";
+    private List<IndexedFile> files = new();
+    private List<Collection> availableCollections = new();
+    private HashSet<int> selectedCollectionIds = new();
+    private int totalCount;
+    private bool isLoading;
+
+    // Sort state
+    private SortColumn sortColumn = SortColumn.Name;
+    private bool sortAsc = true;
+
+    // Selection state
+    private HashSet<long> selectedFileIds = new();
+    private List<IndexedFile> currentFiles = new();
+
+    // Context menu state
+    private bool contextMenuVisible;
+    private double contextMenuX;
+    private double contextMenuY;
+
+    // UI state
+    private bool showSettings;
+    private bool showScanDialog;
+    private bool showToast;
+    private bool showError;
+    private string toastMessage = "";
+    private string errorMessage = "";
+
+    // Scan state
+    private string scanPath = "";
+    private bool isScanning;
+    private ScanProgress scanProgress = new();
+
+    private System.Timers.Timer? debounceTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        debounceTimer = new System.Timers.Timer(300);
+        debounceTimer.AutoReset = false;
+        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(PerformSearch);
+
+#if DESKTOP
+        Scanner.OnProgressChanged += OnScanProgress;
+#endif
+
+        await LoadCollections();
+        await PerformSearch();
+    }
+
+    private async Task LoadCollections()
+    {
+        try
+        {
+            availableCollections = await Collections.GetAllAsync();
+            selectedCollectionIds = availableCollections.Select(c => c.Id).ToHashSet();
+        }
+        catch
+        {
+            availableCollections = new();
+        }
+    }
+
+    private void OnSearchKeyUp()
+    {
+        debounceTimer?.Stop();
+        debounceTimer?.Start();
+    }
+
+    private async Task PerformSearch()
+    {
+        isLoading = true;
+        await InvokeAsync(StateHasChanged);
+
+        try
+        {
+            var collectionIds = selectedCollectionIds.Count == availableCollections.Count
+                ? null
+                : selectedCollectionIds.AsEnumerable();
+
+            var direction = sortAsc ? SortDirection.Asc : SortDirection.Desc;
+            var result = await Search.SearchWithSortAsync(
+                searchQuery,
+                sortColumn,
+                direction,
+                100,
+                0,
+                collectionIds);
+
+            files = result.Files;
+            currentFiles = files;
+            totalCount = result.TotalCount;
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Search error: {ex.Message}");
+            files = new();
+            totalCount = 0;
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void SetSort(SortColumn column)
+    {
+        if (sortColumn == column)
+            sortAsc = !sortAsc;
+        else
+        {
+            sortColumn = column;
+            sortAsc = column is SortColumn.Size or SortColumn.ModifiedAt ? false : true;
+        }
+        _ = PerformSearch();
+    }
+
+    private void ToggleCollection(int id)
+    {
+        if (selectedCollectionIds.Contains(id))
+            selectedCollectionIds.Remove(id);
+        else
+            selectedCollectionIds.Add(id);
+        _ = PerformSearch();
+    }
+
+    // Row interactions
+    private void OnRowClick(MouseEventArgs e, IndexedFile file)
+    {
+        CloseContextMenu();
+
+        if (e.CtrlKey)
+        {
+            if (selectedFileIds.Contains(file.Id))
+                selectedFileIds.Remove(file.Id);
+            else
+                selectedFileIds.Add(file.Id);
+        }
+        else if (e.ShiftKey && selectedFileIds.Count > 0)
+        {
+            // Range selection
+            var lastId = selectedFileIds.Last();
+            var fromIndex = currentFiles.FindIndex(f => f.Id == lastId);
+            var toIndex = currentFiles.FindIndex(f => f.Id == file.Id);
+            if (fromIndex >= 0 && toIndex >= 0)
+            {
+                var start = Math.Min(fromIndex, toIndex);
+                var end = Math.Max(fromIndex, toIndex);
+                for (var i = start; i <= end; i++)
+                    selectedFileIds.Add(currentFiles[i].Id);
+            }
+        }
+        else
+        {
+            selectedFileIds.Clear();
+            selectedFileIds.Add(file.Id);
+        }
+    }
+
+    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    {
+        if (!selectedFileIds.Contains(file.Id))
+        {
+            selectedFileIds.Clear();
+            selectedFileIds.Add(file.Id);
+        }
+
+        if (IsDesktop)
+        {
+            contextMenuX = e.ClientX;
+            contextMenuY = e.ClientY;
+            contextMenuVisible = true;
+        }
+        else
+        {
+            // On mobile, copy path on long press
+            CopyPathToClipboard(file.Path);
+        }
+    }
+
+    private async void OnRowDoubleClick(IndexedFile file)
+    {
+#if DESKTOP
+        var result = await FileOps.OpenFileAsync(file.Path);
+        if (!result.IsSuccess)
+            ShowError(result.ErrorMessage ?? "Failed to open file");
+#else
+        CopyPathToClipboard(file.Path);
+#endif
+    }
+
+    private void CloseContextMenu()
+    {
+        contextMenuVisible = false;
+    }
+
+    // File operations (desktop only)
+#if DESKTOP
+    private async void OpenSelectedFile()
+    {
+        CloseContextMenu();
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        if (file != null)
+        {
+            var result = await FileOps.OpenFileAsync(file.Path);
+            if (!result.IsSuccess)
+                ShowError(result.ErrorMessage ?? "Failed to open file");
+        }
+    }
+
+    private async void OpenSelectedFolder()
+    {
+        CloseContextMenu();
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        if (file != null)
+        {
+            var result = await FileOps.OpenFolderAsync(file.Path);
+            if (!result.IsSuccess)
+                ShowError(result.ErrorMessage ?? "Failed to open folder");
+        }
+    }
+
+    private void StartRename()
+    {
+        CloseContextMenu();
+        // TODO: Implement inline rename
+        ShowToast("Rename not yet implemented in MAUI");
+    }
+
+    private async void StartCopy()
+    {
+        CloseContextMenu();
+        var destFolder = await FolderPicker.PickFolderAsync();
+        if (destFolder != null)
+        {
+            var result = await FileOps.CopyFilesAsync(selectedFileIds, destFolder, HandleConflict);
+            if (result.IsSuccess)
+            {
+                ShowToast("Files copied");
+                await PerformSearch();
+            }
+            else if (!result.IsCancelled)
+                ShowError(result.ErrorMessage ?? "Failed to copy files");
+        }
+    }
+
+    private async void StartMove()
+    {
+        CloseContextMenu();
+        var destFolder = await FolderPicker.PickFolderAsync();
+        if (destFolder != null)
+        {
+            var result = await FileOps.MoveFilesAsync(selectedFileIds, destFolder, HandleConflict);
+            if (result.IsSuccess)
+            {
+                ShowToast("Files moved");
+                selectedFileIds.Clear();
+                await PerformSearch();
+            }
+            else if (!result.IsCancelled)
+                ShowError(result.ErrorMessage ?? "Failed to move files");
+        }
+    }
+
+    private async void DeleteSelected()
+    {
+        CloseContextMenu();
+        var result = await FileOps.DeleteFilesAsync(selectedFileIds);
+        if (result.IsSuccess)
+        {
+            ShowToast("Files deleted");
+            selectedFileIds.Clear();
+            await PerformSearch();
+        }
+        else
+            ShowError(result.ErrorMessage ?? "Failed to delete files");
+    }
+
+    private Task<ConflictResolution> HandleConflict(string fileName, string destPath)
+    {
+        // For now, always keep both
+        // TODO: Show conflict dialog
+        return Task.FromResult(ConflictResolution.KeepBoth);
+    }
+#endif
+
+    private async void CopySelectedPaths()
+    {
+        CloseContextMenu();
+        var paths = currentFiles
+            .Where(f => selectedFileIds.Contains(f.Id))
+            .Select(f => f.Path);
+        var text = string.Join(Environment.NewLine, paths);
+        await CopyToClipboard(text);
+        ShowToast("Path copied");
+    }
+
+    private async void CopyPathToClipboard(string path)
+    {
+        await CopyToClipboard(path);
+        ShowToast("Path copied");
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        try
+        {
+            await Clipboard.Default.SetTextAsync(text);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Clipboard error: {ex.Message}");
+        }
+    }
+
+    // Scan operations (desktop only)
+#if DESKTOP
+    private void OpenScanDialog()
+    {
+        showScanDialog = true;
+    }
+
+    private void CloseScanDialog()
+    {
+        if (!isScanning)
+            showScanDialog = false;
+    }
+
+    private async void BrowseForScanPath()
+    {
+        var path = await FolderPicker.PickFolderAsync();
+        if (path != null)
+        {
+            scanPath = path;
+            StateHasChanged();
+        }
+    }
+
+    private async void StartScan()
+    {
+        if (string.IsNullOrEmpty(scanPath)) return;
+
+        isScanning = true;
+        StateHasChanged();
+
+        try
+        {
+            await Scanner.ScanAsync(scanPath);
+            ShowToast("Scan complete");
+            await PerformSearch();
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Scan failed: {ex.Message}");
+        }
+        finally
+        {
+            isScanning = false;
+            showScanDialog = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CancelScan()
+    {
+        Scanner.Cancel();
+    }
+
+    private void OnScanProgress(ScanProgress progress)
+    {
+        scanProgress = progress;
+        InvokeAsync(StateHasChanged);
+    }
+#endif
+
+    // Settings
+    private void OpenSettings()
+    {
+        showSettings = true;
+    }
+
+    private void CloseSettings()
+    {
+        showSettings = false;
+    }
+
+    private async void ChangeDatabase()
+    {
+        var path = await FolderPicker.PickDatabaseFileAsync();
+        if (path != null)
+        {
+            DbPathService.SetDatabasePath(path);
+            showSettings = false;
+            await LoadCollections();
+            await PerformSearch();
+        }
+    }
+
+    private async void CreateNewDatabase()
+    {
+#if DESKTOP
+        var folder = await FolderPicker.PickFolderAsync();
+        if (folder != null)
+        {
+            var dbPath = Path.Combine(folder, "fileindex.db");
+            DbPathService.SetDatabasePath(dbPath);
+            showSettings = false;
+            await LoadCollections();
+            ShowToast("New database created");
+        }
+#endif
+    }
+
+    // Import state
+    private bool showImportPreview;
+    private bool showImportResult;
+    private ConfigExport? importData;
+    private ImportResult? importResult;
+    private ImportCollisionStrategy importStrategy = ImportCollisionStrategy.Skip;
+    private bool importHasCollisions;
+
+    // Export / Import
+    private async void ExportConfig()
+    {
+        try
+        {
+            var export = await ConfigExportSvc.BuildExportAsync();
+            var json = ConfigExportSvc.Serialize(export);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var fileName = $"fileindexer-config-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+
+            using var stream = new MemoryStream(bytes);
+            var result = await CommunityToolkit.Maui.Storage.FileSaver.Default.SaveAsync(fileName, stream, default);
+            if (result.IsSuccessful)
+                ShowToast("Configuration exported");
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Export failed: {ex.Message}");
+        }
+    }
+
+    private async void ImportConfig()
+    {
+        try
+        {
+            var fileResult = await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle = "Select configuration file",
+                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                {
+                    { DevicePlatform.WinUI, new[] { ".json" } },
+                    { DevicePlatform.macOS, new[] { "json" } },
+                    { DevicePlatform.iOS, new[] { "public.json" } },
+                    { DevicePlatform.Android, new[] { "application/json" } }
+                })
+            });
+
+            if (fileResult == null) return;
+
+            using var stream = await fileResult.OpenReadAsync();
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+
+            importData = ConfigExportSvc.Deserialize(json);
+            if (importData == null || importData.Collections.Count == 0)
+            {
+                ShowError("No collections found in file.");
+                return;
+            }
+
+            var existingCollections = await Collections.GetAllAsync();
+            var existingNames = existingCollections.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            importHasCollisions = importData.Collections.Any(c => existingNames.Contains(c.Name));
+            importStrategy = ImportCollisionStrategy.Skip;
+            showImportPreview = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Import failed: {ex.Message}");
+        }
+    }
+
+    private void CancelImport()
+    {
+        showImportPreview = false;
+        importData = null;
+    }
+
+    private async Task DoImport()
+    {
+        if (importData == null) return;
+
+        showImportPreview = false;
+
+        importResult = await ConfigExportSvc.ImportCollectionsAsync(importData, importStrategy);
+
+        await LoadCollections();
+
+        importData = null;
+        showImportResult = true;
+    }
+
+    private void CloseImportResult()
+    {
+        showImportResult = false;
+        importResult = null;
+    }
+
+    // UI helpers
+    private void ShowToast(string message)
+    {
+        toastMessage = message;
+        showToast = true;
+        StateHasChanged();
+
+        _ = Task.Delay(2000).ContinueWith(_ =>
+        {
+            showToast = false;
+            InvokeAsync(StateHasChanged);
+        });
+    }
+
+    private void ShowError(string message)
+    {
+        errorMessage = message;
+        showError = true;
+        StateHasChanged();
+    }
+
+    private void CloseError()
+    {
+        showError = false;
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+        return "..." + path[^(maxLength - 3)..];
+    }
+
+    public void Dispose()
+    {
+        debounceTimer?.Dispose();
+#if DESKTOP
+        Scanner.OnProgressChanged -= OnScanProgress;
+#endif
+    }
+}

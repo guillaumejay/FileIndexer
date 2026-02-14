@@ -1,0 +1,55 @@
+@inherits LayoutComponentBase
+@inject DatabasePathService DbPathService
+
+<div class="page-container">
+    @if (!DbPathService.HasDatabasePath())
+    {
+        <div class="setup-screen">
+            <div class="setup-icon">📁</div>
+            <h1 class="setup-title">FileIndexer</h1>
+            <p class="setup-description">
+                Select your synced database file to start searching your files.
+            </p>
+            <button class="btn-primary" @onclick="SelectDatabase">
+                Select Database File
+            </button>
+        </div>
+    }
+    else
+    {
+        @Body
+    }
+</div>
+
+@if (showToast)
+{
+    <div class="toast">@toastMessage</div>
+}
+
+@code {
+    private bool showToast;
+    private string toastMessage = "";
+
+    private async Task SelectDatabase()
+    {
+        var path = await DbPathService.PickDatabaseFileAsync();
+        if (path != null)
+        {
+            // Force navigation to refresh
+            StateHasChanged();
+        }
+    }
+
+    public void ShowToast(string message)
+    {
+        toastMessage = message;
+        showToast = true;
+        StateHasChanged();
+
+        _ = Task.Delay(2000).ContinueWith(_ =>
+        {
+            showToast = false;
+            InvokeAsync(StateHasChanged);
+        });
+    }
+}

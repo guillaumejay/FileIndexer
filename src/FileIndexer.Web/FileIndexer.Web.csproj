@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FileIndexer</RootNamespace>
+    <AssemblyName>FileIndexer.Web</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FileIndexer.Core\FileIndexer.Core.csproj" />
+    <ProjectReference Include="..\FileIndexer.Desktop\FileIndexer.Desktop.csproj" />
+  </ItemGroup>
+
+</Project>

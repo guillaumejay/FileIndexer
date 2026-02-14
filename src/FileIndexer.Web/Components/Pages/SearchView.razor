@@ -1,0 +1,713 @@
+@inject SearchService Search
+@inject FileOperationsService FileOps
+@inject IJSRuntime JS
+@implements IDisposable
+
+<div class="view-container" @onkeydown="OnKeyDown" tabindex="0" @ref="containerRef">
+    <div class="search-header">
+        <div class="search-wrapper">
+            <input type="text"
+                   class="search-input"
+                   @bind="searchQuery"
+                   @bind:event="oninput"
+                   @onkeyup="OnSearchKeyUp"
+                   placeholder="Search..." />
+        </div>
+        @if (AvailableCollections.Count > 0)
+        {
+            <div class="collection-filter">
+                @foreach (var col in AvailableCollections)
+                {
+                    <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
+                        <input type="checkbox"
+                               checked="@selectedCollectionIds.Contains(col.Id)"
+                               @onchange="() => ToggleCollection(col.Id)" />
+                        @col.Name
+                    </label>
+                }
+            </div>
+        }
+    </div>
+
+    <div class="stats-row">
+        <span>📋 @totalCount.ToString("N0") files</span>
+        @if (selectedFileIds.Count > 0)
+        {
+            <span class="stats-divider">|</span>
+            <span class="selection-count">✓ @selectedFileIds.Count selected</span>
+        }
+        @if (stats != null)
+        {
+            <span class="stats-divider">|</span>
+            <span>📊 Index: @stats.TotalFiles.ToString("N0")</span>
+            <span class="stats-divider">|</span>
+            <span>💾 @stats.TotalSizeFormatted</span>
+            @if (stats.LastIndexedAtUtc.HasValue)
+            {
+                <span class="stats-divider">|</span>
+                <span>⏱️ @FormatRelativeTime(stats.LastIndexedAtUtc.Value)</span>
+            }
+        }
+    </div>
+
+    <div class="file-list-container" @onclick="OnContainerClick" @oncontextmenu="OnContainerContextMenu" @oncontextmenu:preventDefault>
+        <table class="file-list-table">
+            <thead>
+                <tr>
+                    <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
+                        Name <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
+                        Directory <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
+                        Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
+                        Size <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                    <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
+                        Modified <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize @ref="virtualizeRef" ItemsProvider="LoadFilesAsync" ItemSize="22" OverscanCount="20">
+                    <ItemContent>
+                        @{
+                            var file = context;
+                            var isSelected = selectedFileIds.Contains(file.Id);
+                            var isEditing = editingFileId == file.Id;
+                        }
+                        <tr class="@(isSelected ? "selected" : "")"
+                            @onclick="e => OnRowClick(e, file)"
+                            @onclick:stopPropagation
+                            @oncontextmenu="e => OnRowContextMenu(e, file)"
+                            @oncontextmenu:preventDefault
+                            @oncontextmenu:stopPropagation>
+                            <td class="file-name" @ondblclick="() => OnNameDoubleClick(file)">
+                                @if (isEditing)
+                                {
+                                    <input type="text"
+                                           class="rename-input"
+                                           @bind="editingName"
+                                           @onkeydown="OnRenameKeyDown"
+                                           @onblur="ConfirmRename"
+                                           @ref="renameInputRef" />
+                                }
+                                else
+                                {
+                                    @file.Name
+                                }
+                            </td>
+                            <td class="file-dir" title="@file.Directory" @ondblclick="() => OnDirectoryDoubleClick(file)">
+                                @file.Directory
+                            </td>
+                            <td class="file-ext">@file.Extension</td>
+                            <td class="file-size">@file.SizeFormatted</td>
+                            <td class="file-date">@file.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    </ItemContent>
+                    <Placeholder>
+                        <tr>
+                            <td colspan="5" style="color: var(--text-secondary);">Loading...</td>
+                        </tr>
+                    </Placeholder>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@if (contextMenuVisible)
+{
+    <div class="context-menu" style="left: @(contextMenuX)px; top: @(contextMenuY)px;">
+        @if (selectedFileIds.Count == 1)
+        {
+            <div class="context-menu-item" @onclick="StartRename">Renommer</div>
+        }
+        <div class="context-menu-item" @onclick="StartCopy">Copier vers...</div>
+        <div class="context-menu-item" @onclick="StartMove">Déplacer vers...</div>
+        <div class="context-menu-item context-menu-danger" @onclick="StartDelete">Supprimer</div>
+    </div>
+}
+
+@if (showFolderBrowser)
+{
+    <FolderBrowser OnSelect="OnFolderSelected" OnCancel="OnFolderPickerCancel" InitialPath="@folderBrowserInitialPath" />
+}
+
+@if (showConflictDialog)
+{
+    <ConflictDialog FileName="@conflictFileName"
+                    DestinationPath="@conflictDestPath"
+                    OnResolve="OnConflictResolved" />
+}
+
+@if (showErrorDialog)
+{
+    <ErrorDialog Message="@errorMessage" OnClose="CloseErrorDialog" />
+}
+
+@if (showCopyNotification)
+{
+    <div class="notification">Path copied!</div>
+}
+
+@code {
+    [Parameter] public List<Collection> AvailableCollections { get; set; } = new();
+    [Parameter] public EventCallback OnCollectionsChanged { get; set; }
+
+    private ElementReference containerRef;
+    private ElementReference renameInputRef;
+
+    private string searchQuery = "";
+    private SortColumn sortColumn = SortColumn.Name;
+    private SortDirection sortDirection = SortDirection.Asc;
+    private int totalCount = 0;
+    private HashSet<int> selectedCollectionIds = new();
+    private IndexStats? stats;
+    private bool showCopyNotification = false;
+
+    // Selection state
+    private HashSet<long> selectedFileIds = new();
+    private long? anchorFileId;
+    private List<IndexedFile> currentFiles = new();
+
+    // Rename state
+    private long? editingFileId;
+    private string editingName = "";
+    private int editingExtensionStart = 0;
+
+    // Slow double-click state (for rename trigger)
+    private long? lastClickedFileId;
+    private DateTime lastClickTime = DateTime.MinValue;
+
+    // Context menu state
+    private bool contextMenuVisible;
+    private double contextMenuX;
+    private double contextMenuY;
+
+    // Folder browser state
+    private bool showFolderBrowser;
+    private string? folderBrowserInitialPath;
+    private TaskCompletionSource<string?>? folderPickerTcs;
+    private FileOperationType pendingOperation;
+
+    // Conflict dialog state
+    private bool showConflictDialog;
+    private string conflictFileName = "";
+    private string conflictDestPath = "";
+    private TaskCompletionSource<ConflictResolution>? conflictTcs;
+
+    // Error dialog state
+    private bool showErrorDialog;
+    private string errorMessage = "";
+
+    private Virtualize<IndexedFile>? virtualizeRef;
+    private System.Timers.Timer? debounceTimer;
+    private System.Timers.Timer? notificationTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        debounceTimer = new System.Timers.Timer(200);
+        debounceTimer.AutoReset = false;
+        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(RefreshList);
+
+        notificationTimer = new System.Timers.Timer(2000);
+        notificationTimer.AutoReset = false;
+        notificationTimer.Elapsed += (s, e) => InvokeAsync(() => { showCopyNotification = false; StateHasChanged(); });
+
+        await LoadStats();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (AvailableCollections.Count > 0 && selectedCollectionIds.Count == 0)
+        {
+            selectedCollectionIds = AvailableCollections.Select(c => c.Id).ToHashSet();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (editingFileId.HasValue && editingExtensionStart > 0)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("eval", $@"
+                    (function() {{
+                        var input = document.querySelector('.rename-input');
+                        if (input) {{
+                            input.focus();
+                            input.setSelectionRange(0, {editingExtensionStart});
+                        }}
+                    }})()
+                ");
+                editingExtensionStart = 0;
+            }
+            catch { }
+        }
+    }
+
+    public async Task RefreshData()
+    {
+        selectedCollectionIds = AvailableCollections.Select(c => c.Id).ToHashSet();
+        selectedFileIds.Clear();
+        await LoadStats();
+        await RefreshList();
+    }
+
+    // Selection handling
+    private void OnRowClick(MouseEventArgs e, IndexedFile file)
+    {
+        CloseContextMenu();
+
+        if (e.CtrlKey)
+        {
+            // Ctrl+click: toggle selection
+            if (selectedFileIds.Contains(file.Id))
+            {
+                selectedFileIds.Remove(file.Id);
+            }
+            else
+            {
+                selectedFileIds.Add(file.Id);
+            }
+            anchorFileId = file.Id;
+            // Reset slow double-click state on modifier click
+            lastClickedFileId = null;
+            lastClickTime = DateTime.MinValue;
+        }
+        else if (e.ShiftKey && anchorFileId.HasValue)
+        {
+            // Shift+click: range selection
+            SelectRange(anchorFileId.Value, file.Id);
+            // Reset slow double-click state on modifier click
+            lastClickedFileId = null;
+            lastClickTime = DateTime.MinValue;
+        }
+        else
+        {
+            // Simple click: check for slow double-click (500-1500ms) to trigger rename
+            var now = DateTime.Now;
+            var timeSinceLastClick = (now - lastClickTime).TotalMilliseconds;
+
+            if (lastClickedFileId == file.Id &&
+                timeSinceLastClick >= 500 &&
+                timeSinceLastClick <= 1500 &&
+                selectedFileIds.Count == 1 &&
+                selectedFileIds.Contains(file.Id))
+            {
+                // Slow double-click detected: trigger rename
+                StartRenameForSelected();
+                return;
+            }
+
+            // Normal single selection
+            selectedFileIds.Clear();
+            selectedFileIds.Add(file.Id);
+            anchorFileId = file.Id;
+
+            // Track this click for potential slow double-click
+            lastClickedFileId = file.Id;
+            lastClickTime = now;
+        }
+    }
+
+    private void SelectRange(long fromId, long toId)
+    {
+        var fromIndex = currentFiles.FindIndex(f => f.Id == fromId);
+        var toIndex = currentFiles.FindIndex(f => f.Id == toId);
+
+        if (fromIndex < 0 || toIndex < 0) return;
+
+        var start = Math.Min(fromIndex, toIndex);
+        var end = Math.Max(fromIndex, toIndex);
+
+        selectedFileIds.Clear();
+        for (var i = start; i <= end; i++)
+        {
+            selectedFileIds.Add(currentFiles[i].Id);
+        }
+    }
+
+    private void OnContainerClick(MouseEventArgs e)
+    {
+        CloseContextMenu();
+    }
+
+    private void OnContainerContextMenu(MouseEventArgs e)
+    {
+        CloseContextMenu();
+    }
+
+    // Context menu
+    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    {
+        // If right-clicking on a non-selected file, select only that file
+        if (!selectedFileIds.Contains(file.Id))
+        {
+            selectedFileIds.Clear();
+            selectedFileIds.Add(file.Id);
+            anchorFileId = file.Id;
+        }
+
+        contextMenuX = e.ClientX;
+        contextMenuY = e.ClientY;
+        contextMenuVisible = true;
+    }
+
+    private void CloseContextMenu()
+    {
+        contextMenuVisible = false;
+    }
+
+    // Double-click actions
+    private async Task OnNameDoubleClick(IndexedFile file)
+    {
+        var result = await FileOps.OpenFileAsync(file.Path);
+        if (!result.IsSuccess)
+        {
+            ShowError(result.ErrorMessage ?? "Erreur inconnue");
+        }
+    }
+
+    private async Task OnDirectoryDoubleClick(IndexedFile file)
+    {
+        var result = await FileOps.OpenFolderAsync(file.Path);
+        if (!result.IsSuccess)
+        {
+            ShowError(result.ErrorMessage ?? "Erreur inconnue");
+        }
+    }
+
+    // Keyboard handling
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (editingFileId.HasValue)
+        {
+            return; // Let rename input handle its own keys
+        }
+
+        switch (e.Key)
+        {
+            case "F2" when selectedFileIds.Count == 1:
+                StartRenameForSelected();
+                break;
+            case "Delete":
+                if (selectedFileIds.Count > 0)
+                {
+                    await DeleteSelectedFiles();
+                }
+                break;
+            case "Escape":
+                CloseContextMenu();
+                break;
+        }
+    }
+
+    // Rename operations
+    private void StartRename()
+    {
+        CloseContextMenu();
+        StartRenameForSelected();
+    }
+
+    private void StartRenameForSelected()
+    {
+        if (selectedFileIds.Count != 1) return;
+
+        var fileId = selectedFileIds.First();
+        var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
+        if (file == null) return;
+
+        editingFileId = fileId;
+        editingName = file.Name;
+
+        // Calculate the position before the extension for pre-selection
+        var lastDot = file.Name.LastIndexOf('.');
+        editingExtensionStart = lastDot > 0 ? lastDot : file.Name.Length;
+
+        // Reset slow double-click state to avoid re-triggering
+        lastClickedFileId = null;
+        lastClickTime = DateTime.MinValue;
+
+        StateHasChanged();
+    }
+
+    private async Task OnRenameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ConfirmRename();
+        }
+        else if (e.Key == "Escape")
+        {
+            CancelRename();
+        }
+    }
+
+    private async Task ConfirmRename()
+    {
+        if (!editingFileId.HasValue) return;
+
+        var fileId = editingFileId.Value;
+        var newName = editingName.Trim();
+        editingFileId = null;
+
+        if (string.IsNullOrEmpty(newName)) return;
+
+        var result = await FileOps.RenameFileAsync(fileId, newName, HandleConflict);
+        if (!result.IsSuccess && !result.IsCancelled)
+        {
+            ShowError(result.ErrorMessage ?? "Erreur lors du renommage");
+        }
+        else if (result.IsSuccess)
+        {
+            await RefreshList();
+        }
+    }
+
+    private void CancelRename()
+    {
+        editingFileId = null;
+        editingName = "";
+    }
+
+    // Copy operation
+    private async Task StartCopy()
+    {
+        CloseContextMenu();
+        pendingOperation = FileOperationType.Copy;
+        await ShowFolderPicker();
+    }
+
+    // Move operation
+    private async Task StartMove()
+    {
+        CloseContextMenu();
+        pendingOperation = FileOperationType.Move;
+        await ShowFolderPicker();
+    }
+
+    // Delete operation
+    private async Task StartDelete()
+    {
+        CloseContextMenu();
+        await DeleteSelectedFiles();
+    }
+
+    private async Task DeleteSelectedFiles()
+    {
+        if (selectedFileIds.Count == 0) return;
+
+        var result = await FileOps.DeleteFilesAsync(selectedFileIds);
+        if (!result.IsSuccess)
+        {
+            ShowError(result.ErrorMessage ?? "Erreur lors de la suppression");
+        }
+        else
+        {
+            selectedFileIds.Clear();
+            await RefreshList();
+        }
+    }
+
+    // Folder picker
+    private async Task ShowFolderPicker()
+    {
+        folderPickerTcs = new TaskCompletionSource<string?>();
+        showFolderBrowser = true;
+        StateHasChanged();
+
+        var folder = await folderPickerTcs.Task;
+        showFolderBrowser = false;
+
+        if (folder != null)
+        {
+            await ExecutePendingOperation(folder);
+        }
+    }
+
+    private void OnFolderSelected(string path)
+    {
+        folderPickerTcs?.TrySetResult(path);
+    }
+
+    private void OnFolderPickerCancel()
+    {
+        folderPickerTcs?.TrySetResult(null);
+    }
+
+    private async Task ExecutePendingOperation(string destinationFolder)
+    {
+        OperationResult result;
+
+        if (pendingOperation == FileOperationType.Copy)
+        {
+            result = await FileOps.CopyFilesAsync(selectedFileIds, destinationFolder, HandleConflict);
+        }
+        else
+        {
+            result = await FileOps.MoveFilesAsync(selectedFileIds, destinationFolder, HandleConflict);
+        }
+
+        if (!result.IsSuccess && !result.IsCancelled)
+        {
+            ShowError(result.ErrorMessage ?? "Erreur lors de l'opération");
+        }
+        else if (result.IsSuccess)
+        {
+            selectedFileIds.Clear();
+            await RefreshList();
+        }
+    }
+
+    // Conflict handling
+    private async Task<ConflictResolution> HandleConflict(string fileName, string destPath)
+    {
+        conflictFileName = fileName;
+        conflictDestPath = destPath;
+        conflictTcs = new TaskCompletionSource<ConflictResolution>();
+        showConflictDialog = true;
+        await InvokeAsync(StateHasChanged);
+
+        var result = await conflictTcs.Task;
+        showConflictDialog = false;
+        await InvokeAsync(StateHasChanged);
+
+        return result;
+    }
+
+    private void OnConflictResolved(ConflictResolution resolution)
+    {
+        conflictTcs?.TrySetResult(resolution);
+    }
+
+    // Error handling
+    private void ShowError(string message)
+    {
+        errorMessage = message;
+        showErrorDialog = true;
+    }
+
+    private void CloseErrorDialog()
+    {
+        showErrorDialog = false;
+    }
+
+    // Data loading
+    private void ToggleCollection(int collectionId)
+    {
+        if (selectedCollectionIds.Contains(collectionId))
+        {
+            selectedCollectionIds.Remove(collectionId);
+        }
+        else
+        {
+            selectedCollectionIds.Add(collectionId);
+        }
+        _ = RefreshList();
+        _ = LoadStats();
+    }
+
+    private IEnumerable<int>? GetSelectedCollectionIds()
+    {
+        if (selectedCollectionIds.Count == 0 || selectedCollectionIds.Count == AvailableCollections.Count)
+        {
+            return null;
+        }
+        return selectedCollectionIds;
+    }
+
+    private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
+    {
+        var effectiveSortColumn = sortColumn;
+        var effectiveSortDirection = sortDirection;
+
+        if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc)
+        {
+            effectiveSortColumn = SortColumn.Rank;
+            effectiveSortDirection = SortDirection.Asc;
+        }
+
+        var result = await Search.SearchWithSortAsync(
+            searchQuery,
+            effectiveSortColumn,
+            effectiveSortDirection,
+            request.Count,
+            request.StartIndex,
+            GetSelectedCollectionIds());
+
+        totalCount = result.TotalCount;
+        currentFiles = result.Files;
+        await InvokeAsync(StateHasChanged);
+
+        return new ItemsProviderResult<IndexedFile>(result.Files, result.TotalCount);
+    }
+
+    private async Task LoadStats()
+    {
+        stats = await Search.GetStatsAsync(GetSelectedCollectionIds());
+    }
+
+    private void SetSort(SortColumn column)
+    {
+        if (sortColumn == column)
+        {
+            sortDirection = sortDirection == SortDirection.Asc ? SortDirection.Desc : SortDirection.Asc;
+        }
+        else
+        {
+            sortColumn = column;
+            sortDirection = column is SortColumn.Size or SortColumn.ModifiedAt
+                ? SortDirection.Desc
+                : SortDirection.Asc;
+        }
+        _ = RefreshList();
+    }
+
+    private void OnSearchKeyUp(KeyboardEventArgs e)
+    {
+        debounceTimer?.Stop();
+        debounceTimer?.Start();
+    }
+
+    private async Task RefreshList()
+    {
+        if (virtualizeRef != null)
+        {
+            await virtualizeRef.RefreshDataAsync();
+        }
+        StateHasChanged();
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+        return path[..(maxLength - 3)] + "...";
+    }
+
+    private static string FormatRelativeTime(DateTime utcTime)
+    {
+        var elapsed = DateTime.UtcNow - utcTime;
+        if (elapsed.TotalMinutes < 1) return "now";
+        if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
+        if (elapsed.TotalHours < 24) return $"{(int)elapsed.TotalHours}h ago";
+        return $"{(int)elapsed.TotalDays}d ago";
+    }
+
+    public void Dispose()
+    {
+        debounceTimer?.Dispose();
+        notificationTimer?.Dispose();
+    }
+
+    private enum FileOperationType
+    {
+        Copy,
+        Move
+    }
+}
