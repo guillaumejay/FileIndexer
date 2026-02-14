@@ -2,136 +2,138 @@
 @using FileIndexer.Models
 @inject SearchService Search
 @inject CollectionService Collections
-@inject ConfigExportService ConfigExportSvc
 @inject DatabasePathService DbPathService
 @inject IMauiFolderPickerService FolderPicker
+@inject IJSRuntime JS
 
-<div class="view-container">
-    @* Header with search and actions *@
+<div class="page-container">
+    @* Header with tabs and actions *@
     <div class="search-header">
-        <div class="search-wrapper">
-            <input type="text"
-                   class="search-input"
-                   @bind="searchQuery"
-                   @bind:event="oninput"
-                   @onkeyup="OnSearchKeyUp"
-                   placeholder="Search files..." />
-        </div>
-
-        @if (IsDesktop)
-        {
-            <button class="btn-icon" @onclick="OpenScanDialog" title="Scan">
-                🔄
+        <div class="tab-nav">
+            <button class="tab-btn @(activeTab == "search" ? "active" : "")" @onclick='() => SetTab("search")'>
+                🔍 Search
             </button>
-        }
+            <button class="tab-btn @(activeTab == "collections" ? "active" : "")" @onclick='() => SetTab("collections")'>
+                📁 Collections
+            </button>
+        </div>
+        <div style="flex: 1;"></div>
+        <button class="btn-icon" @onclick="ToggleTheme" title="Toggle theme">
+            @(isLightTheme ? "🌙" : "☀️")
+        </button>
         <button class="btn-icon" @onclick="OpenSettings" title="Settings">
             ⚙️
         </button>
     </div>
 
-    @* Collection filter *@
-    @if (availableCollections.Count > 1)
+    @* Tab content *@
+    @if (activeTab == "search")
     {
-        <div class="collection-filter">
-            @foreach (var col in availableCollections)
+        @* Search input *@
+        <div class="search-bar">
+            <div class="search-wrapper">
+                <input type="text"
+                       class="search-input"
+                       @bind="searchQuery"
+                       @bind:event="oninput"
+                       @onkeyup="OnSearchKeyUp"
+                       placeholder="Search files..." />
+            </div>
+        </div>
+
+        @* Collection filter *@
+        @if (availableCollections.Count > 1)
+        {
+            <div class="collection-filter">
+                @foreach (var col in availableCollections)
+                {
+                    <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
+                        <input type="checkbox"
+                               checked="@selectedCollectionIds.Contains(col.Id)"
+                               @onchange="() => ToggleCollection(col.Id)" />
+                        @col.Name
+                    </label>
+                }
+            </div>
+        }
+
+        @* File list *@
+        <div class="file-list-container">
+            <table class="file-list-table">
+                <thead>
+                    <tr>
+                        <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
+                            Name <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortAsc ? "▲" : "▼") : "")</span>
+                        </th>
+                        <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
+                            Directory <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortAsc ? "▲" : "▼") : "")</span>
+                        </th>
+                        <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
+                            Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortAsc ? "▲" : "▼") : "")</span>
+                        </th>
+                        <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
+                            Size <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortAsc ? "▲" : "▼") : "")</span>
+                        </th>
+                        <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
+                            Modified <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortAsc ? "▲" : "▼") : "")</span>
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <Virtualize @ref="virtualizeRef" ItemsProvider="LoadFilesAsync" ItemSize="30" OverscanCount="20">
+                        <ItemContent>
+                            @{
+                                var file = context;
+                                var isSelected = selectedFileIds.Contains(file.Id);
+                            }
+                            <tr class="@(isSelected ? "selected" : "")"
+                                @onclick="e => OnRowClick(e, file)"
+                                @onclick:stopPropagation
+                                @oncontextmenu="e => OnRowContextMenu(e, file)"
+                                @oncontextmenu:preventDefault
+                                @ondblclick="() => OnRowDoubleClick(file)">
+                                <td class="file-name">@file.Name</td>
+                                <td class="file-dir" title="@file.Directory">@file.Directory</td>
+                                <td class="file-ext">@file.Extension</td>
+                                <td class="file-size">@file.SizeFormatted</td>
+                                <td class="file-date">@file.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                            </tr>
+                        </ItemContent>
+                        <Placeholder>
+                            <tr>
+                                <td colspan="5" style="color: var(--text-secondary);">Loading...</td>
+                            </tr>
+                        </Placeholder>
+                    </Virtualize>
+                </tbody>
+            </table>
+        </div>
+
+        @* Stats bar *@
+        <div class="stats-row">
+            <span>📋 @totalCount.ToString("N0") files</span>
+            @if (selectedFileIds.Count > 0)
             {
-                <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
-                    <input type="checkbox"
-                           checked="@selectedCollectionIds.Contains(col.Id)"
-                           @onchange="() => ToggleCollection(col.Id)" />
-                    @col.Name
-                </label>
+                <span class="stats-divider">|</span>
+                <span class="selection-count">✓ @selectedFileIds.Count selected</span>
+            }
+            @if (!string.IsNullOrEmpty(searchQuery))
+            {
+                <span class="stats-divider">|</span>
+                <span>🔍 "@searchQuery"</span>
             }
         </div>
+
+        @if (!IsDesktop)
+        {
+            <div class="long-press-hint">
+                Long-press a row to copy the file path
+            </div>
+        }
     }
-
-    @* File list *@
-    <div class="file-list-container">
-        <table class="file-list-table">
-            <thead>
-                <tr>
-                    <th class="@(sortColumn == SortColumn.Name ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Name)">
-                        Name <span class="sort-indicator">@(sortColumn == SortColumn.Name ? (sortAsc ? "▲" : "▼") : "")</span>
-                    </th>
-                    <th class="@(sortColumn == SortColumn.Directory ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Directory)">
-                        Directory <span class="sort-indicator">@(sortColumn == SortColumn.Directory ? (sortAsc ? "▲" : "▼") : "")</span>
-                    </th>
-                    <th class="@(sortColumn == SortColumn.Extension ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Extension)">
-                        Ext <span class="sort-indicator">@(sortColumn == SortColumn.Extension ? (sortAsc ? "▲" : "▼") : "")</span>
-                    </th>
-                    <th class="@(sortColumn == SortColumn.Size ? "sorted" : "")" @onclick="() => SetSort(SortColumn.Size)">
-                        Size <span class="sort-indicator">@(sortColumn == SortColumn.Size ? (sortAsc ? "▲" : "▼") : "")</span>
-                    </th>
-                    <th class="@(sortColumn == SortColumn.ModifiedAt ? "sorted" : "")" @onclick="() => SetSort(SortColumn.ModifiedAt)">
-                        Modified <span class="sort-indicator">@(sortColumn == SortColumn.ModifiedAt ? (sortAsc ? "▲" : "▼") : "")</span>
-                    </th>
-                </tr>
-            </thead>
-            <tbody>
-                @if (isLoading)
-                {
-                    <tr>
-                        <td colspan="5" class="loading">Loading...</td>
-                    </tr>
-                }
-                else if (files.Count == 0)
-                {
-                    <tr>
-                        <td colspan="5" class="empty-state">
-                            @if (string.IsNullOrEmpty(searchQuery))
-                            {
-                                <span>Enter a search term to find files</span>
-                            }
-                            else
-                            {
-                                <span>No files found</span>
-                            }
-                        </td>
-                    </tr>
-                }
-                else
-                {
-                    @foreach (var file in files)
-                    {
-                        var isSelected = selectedFileIds.Contains(file.Id);
-                        <tr class="@(isSelected ? "selected" : "")"
-                            @onclick="e => OnRowClick(e, file)"
-                            @onclick:stopPropagation
-                            @oncontextmenu="e => OnRowContextMenu(e, file)"
-                            @oncontextmenu:preventDefault
-                            @ondblclick="() => OnRowDoubleClick(file)">
-                            <td class="file-name">@file.Name</td>
-                            <td class="file-dir" title="@file.Directory">@file.Directory</td>
-                            <td class="file-ext">@file.Extension</td>
-                            <td class="file-size">@file.SizeFormatted</td>
-                            <td class="file-date">@file.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
-                        </tr>
-                    }
-                }
-            </tbody>
-        </table>
-    </div>
-
-    @* Stats bar *@
-    <div class="stats-row">
-        <span>📋 @totalCount.ToString("N0") files</span>
-        @if (selectedFileIds.Count > 0)
-        {
-            <span class="stats-divider">|</span>
-            <span class="selection-count">✓ @selectedFileIds.Count selected</span>
-        }
-        @if (!string.IsNullOrEmpty(searchQuery))
-        {
-            <span class="stats-divider">|</span>
-            <span>🔍 "@searchQuery"</span>
-        }
-    </div>
-
-    @if (!IsDesktop)
+    else
     {
-        <div class="long-press-hint">
-            Long-press a row to copy the file path
-        </div>
+        <CollectionsView @ref="collectionsViewRef" OnCollectionsChanged="OnCollectionsChanged" />
     }
 </div>
 
@@ -180,107 +182,6 @@
                     </button>
                 }
             </div>
-            <div class="settings-section" style="margin-top: 1rem;">
-                <h3>Configuration</h3>
-                <div style="display: flex; gap: 0.5rem;">
-                    <button class="btn-secondary" @onclick="ExportConfig">Export</button>
-                    <button class="btn-secondary" @onclick="ImportConfig">Import</button>
-                </div>
-            </div>
-        </div>
-    </div>
-}
-
-@* Import Preview Dialog *@
-@if (showImportPreview && importData != null)
-{
-    <div class="settings-overlay" @onclick="CancelImport">
-        <div class="settings-screen" @onclick:stopPropagation>
-            <div class="settings-section">
-                <h3>Import Configuration</h3>
-                <p><strong>@importData.Collections.Count</strong> collection(s) found.</p>
-                @if (importData.Settings != null)
-                {
-                    <p>Settings included (will be applied).</p>
-                }
-
-                @if (importHasCollisions)
-                {
-                    <p class="warning" style="color: var(--warning);">Some names already exist:</p>
-                    <div style="display: flex; gap: 0.5rem; margin: 0.5rem 0;">
-                        <button class="@(importStrategy == ImportCollisionStrategy.Skip ? "btn-primary" : "btn-secondary")"
-                                @onclick="() => importStrategy = ImportCollisionStrategy.Skip">
-                            Skip
-                        </button>
-                        <button class="@(importStrategy == ImportCollisionStrategy.Rename ? "btn-primary" : "btn-secondary")"
-                                @onclick="() => importStrategy = ImportCollisionStrategy.Rename">
-                            Auto-rename
-                        </button>
-                    </div>
-                }
-
-                <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
-                    <button class="btn-secondary" @onclick="CancelImport">Cancel</button>
-                    <button class="btn-primary" @onclick="DoImport">Import</button>
-                </div>
-            </div>
-        </div>
-    </div>
-}
-
-@* Import Result Dialog *@
-@if (showImportResult && importResult != null)
-{
-    <div class="settings-overlay" @onclick="CloseImportResult">
-        <div class="settings-screen" @onclick:stopPropagation>
-            <div class="settings-section">
-                <h3>Import Complete</h3>
-                <p><strong>@importResult.Imported</strong> imported, <strong>@importResult.Skipped</strong> skipped, <strong>@importResult.Renamed</strong> renamed.</p>
-                @if (importResult.Details.Count > 0)
-                {
-                    <ul style="font-size: 0.8125rem; color: var(--text-secondary); padding-left: 1.25rem;">
-                        @foreach (var detail in importResult.Details)
-                        {
-                            <li>@detail</li>
-                        }
-                    </ul>
-                }
-                <button class="btn-primary" style="margin-top: 0.5rem;" @onclick="CloseImportResult">OK</button>
-            </div>
-        </div>
-    </div>
-}
-
-@* Scan dialog (desktop only) *@
-@if (IsDesktop && showScanDialog)
-{
-    <div class="settings-overlay" @onclick="CloseScanDialog">
-        <div class="settings-screen" @onclick:stopPropagation>
-            <div class="settings-section">
-                <h3>Scan Directory</h3>
-                <div class="scan-path-row">
-                    <input type="text" class="scan-path-input" @bind="scanPath" placeholder="Path to scan..." />
-                    <button class="btn-secondary" @onclick="BrowseForScanPath">Browse</button>
-                </div>
-                @if (isScanning)
-                {
-                    <div class="scan-progress">
-                        <div class="progress-bar-container">
-                            <div class="progress-bar" style="width: @(scanProgress.Percentage)%"></div>
-                        </div>
-                        <div class="progress-text">
-                            @scanProgress.ProcessedFiles.ToString("N0") / @scanProgress.TotalFiles.ToString("N0") files
-                        </div>
-                    </div>
-                    <button class="btn-danger" @onclick="CancelScan">Cancel</button>
-                }
-                else
-                {
-                    <button class="btn-primary" @onclick="StartScan" disabled="@string.IsNullOrEmpty(scanPath)">
-                        Start Scan
-                    </button>
-                }
-            </div>
         </div>
     </div>
 }
@@ -309,19 +210,28 @@
     // Platform detection
 #if DESKTOP
     private bool IsDesktop => true;
-    [Inject] private FileScannerService Scanner { get; set; } = default!;
     [Inject] private FileOperationsService FileOps { get; set; } = default!;
 #else
     private bool IsDesktop => false;
+    private void OpenSelectedFile() { }
+    private void OpenSelectedFolder() { }
+    private void StartRename() { }
+    private void StartCopy() { }
+    private void StartMove() { }
+    private void DeleteSelected() { }
 #endif
+
+    // Tab state
+    private string activeTab = "search";
+    private CollectionsView? collectionsViewRef;
 
     // Search state
     private string searchQuery = "";
-    private List<IndexedFile> files = new();
     private List<Collection> availableCollections = new();
     private HashSet<int> selectedCollectionIds = new();
     private int totalCount;
-    private bool isLoading;
+
+    private Virtualize<IndexedFile>? virtualizeRef;
 
     // Sort state
     private SortColumn sortColumn = SortColumn.Name;
@@ -338,16 +248,13 @@
 
     // UI state
     private bool showSettings;
-    private bool showScanDialog;
     private bool showToast;
     private bool showError;
     private string toastMessage = "";
     private string errorMessage = "";
 
-    // Scan state
-    private string scanPath = "";
-    private bool isScanning;
-    private ScanProgress scanProgress = new();
+    // Theme state
+    private bool isLightTheme;
 
     private System.Timers.Timer? debounceTimer;
 
@@ -355,14 +262,23 @@
     {
         debounceTimer = new System.Timers.Timer(300);
         debounceTimer.AutoReset = false;
-        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(PerformSearch);
+        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(RefreshList);
 
-#if DESKTOP
-        Scanner.OnProgressChanged += OnScanProgress;
-#endif
+        isLightTheme = Preferences.Default.Get("theme", "dark") == "light";
 
         await LoadCollections();
-        await PerformSearch();
+        await RefreshList();
+    }
+
+    private bool _themeApplied;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_themeApplied)
+        {
+            _themeApplied = true;
+            await ApplyTheme();
+        }
     }
 
     private async Task LoadCollections()
@@ -378,47 +294,69 @@
         }
     }
 
+    private async Task OnCollectionsChanged()
+    {
+        await LoadCollections();
+        await RefreshList();
+    }
+
+    private void SetTab(string tab)
+    {
+        activeTab = tab;
+    }
+
     private void OnSearchKeyUp()
     {
         debounceTimer?.Stop();
         debounceTimer?.Start();
     }
 
-    private async Task PerformSearch()
+    private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
     {
-        isLoading = true;
-        await InvokeAsync(StateHasChanged);
-
         try
         {
             var collectionIds = selectedCollectionIds.Count == availableCollections.Count
                 ? null
                 : selectedCollectionIds.AsEnumerable();
 
-            var direction = sortAsc ? SortDirection.Asc : SortDirection.Desc;
+            var effectiveSortColumn = sortColumn;
+            var effectiveDirection = sortAsc ? SortDirection.Asc : SortDirection.Desc;
+
+            if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortAsc)
+            {
+                effectiveSortColumn = SortColumn.Rank;
+                effectiveDirection = SortDirection.Asc;
+            }
+
             var result = await Search.SearchWithSortAsync(
                 searchQuery,
-                sortColumn,
-                direction,
-                100,
-                0,
+                effectiveSortColumn,
+                effectiveDirection,
+                request.Count,
+                request.StartIndex,
                 collectionIds);
 
-            files = result.Files;
-            currentFiles = files;
             totalCount = result.TotalCount;
+            currentFiles = result.Files;
+            await InvokeAsync(StateHasChanged);
+
+            return new ItemsProviderResult<IndexedFile>(result.Files, result.TotalCount);
         }
         catch (Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"Search error: {ex.Message}");
-            files = new();
             totalCount = 0;
+            return new ItemsProviderResult<IndexedFile>(new List<IndexedFile>(), 0);
         }
-        finally
+    }
+
+    private async Task RefreshList()
+    {
+        if (virtualizeRef != null)
         {
-            isLoading = false;
-            await InvokeAsync(StateHasChanged);
+            await virtualizeRef.RefreshDataAsync();
         }
+        StateHasChanged();
     }
 
     private void SetSort(SortColumn column)
@@ -430,7 +368,7 @@
             sortColumn = column;
             sortAsc = column is SortColumn.Size or SortColumn.ModifiedAt ? false : true;
         }
-        _ = PerformSearch();
+        _ = RefreshList();
     }
 
     private void ToggleCollection(int id)
@@ -439,7 +377,7 @@
             selectedCollectionIds.Remove(id);
         else
             selectedCollectionIds.Add(id);
-        _ = PerformSearch();
+        _ = RefreshList();
     }
 
     // Row interactions
@@ -456,7 +394,6 @@
         }
         else if (e.ShiftKey && selectedFileIds.Count > 0)
         {
-            // Range selection
             var lastId = selectedFileIds.Last();
             var fromIndex = currentFiles.FindIndex(f => f.Id == lastId);
             var toIndex = currentFiles.FindIndex(f => f.Id == file.Id);
@@ -491,7 +428,6 @@
         }
         else
         {
-            // On mobile, copy path on long press
             CopyPathToClipboard(file.Path);
         }
     }
@@ -541,7 +477,6 @@
     private void StartRename()
     {
         CloseContextMenu();
-        // TODO: Implement inline rename
         ShowToast("Rename not yet implemented in MAUI");
     }
 
@@ -555,7 +490,7 @@
             if (result.IsSuccess)
             {
                 ShowToast("Files copied");
-                await PerformSearch();
+                await RefreshList();
             }
             else if (!result.IsCancelled)
                 ShowError(result.ErrorMessage ?? "Failed to copy files");
@@ -573,7 +508,7 @@
             {
                 ShowToast("Files moved");
                 selectedFileIds.Clear();
-                await PerformSearch();
+                await RefreshList();
             }
             else if (!result.IsCancelled)
                 ShowError(result.ErrorMessage ?? "Failed to move files");
@@ -588,7 +523,7 @@
         {
             ShowToast("Files deleted");
             selectedFileIds.Clear();
-            await PerformSearch();
+            await RefreshList();
         }
         else
             ShowError(result.ErrorMessage ?? "Failed to delete files");
@@ -596,8 +531,6 @@
 
     private Task<ConflictResolution> HandleConflict(string fileName, string destPath)
     {
-        // For now, always keep both
-        // TODO: Show conflict dialog
         return Task.FromResult(ConflictResolution.KeepBoth);
     }
 #endif
@@ -631,65 +564,20 @@
         }
     }
 
-    // Scan operations (desktop only)
-#if DESKTOP
-    private void OpenScanDialog()
+    // Theme
+    private async Task ToggleTheme()
     {
-        showScanDialog = true;
+        isLightTheme = !isLightTheme;
+        var theme = isLightTheme ? "light" : "dark";
+        Preferences.Default.Set("theme", theme);
+        await ApplyTheme();
     }
 
-    private void CloseScanDialog()
+    private async Task ApplyTheme()
     {
-        if (!isScanning)
-            showScanDialog = false;
+        var cssClass = isLightTheme ? "light-theme" : "";
+        await JS.InvokeVoidAsync("themeInterop.setTheme", cssClass);
     }
-
-    private async void BrowseForScanPath()
-    {
-        var path = await FolderPicker.PickFolderAsync();
-        if (path != null)
-        {
-            scanPath = path;
-            StateHasChanged();
-        }
-    }
-
-    private async void StartScan()
-    {
-        if (string.IsNullOrEmpty(scanPath)) return;
-
-        isScanning = true;
-        StateHasChanged();
-
-        try
-        {
-            await Scanner.ScanAsync(scanPath);
-            ShowToast("Scan complete");
-            await PerformSearch();
-        }
-        catch (Exception ex)
-        {
-            ShowError($"Scan failed: {ex.Message}");
-        }
-        finally
-        {
-            isScanning = false;
-            showScanDialog = false;
-            StateHasChanged();
-        }
-    }
-
-    private void CancelScan()
-    {
-        Scanner.Cancel();
-    }
-
-    private void OnScanProgress(ScanProgress progress)
-    {
-        scanProgress = progress;
-        InvokeAsync(StateHasChanged);
-    }
-#endif
 
     // Settings
     private void OpenSettings()
@@ -710,7 +598,7 @@
             DbPathService.SetDatabasePath(path);
             showSettings = false;
             await LoadCollections();
-            await PerformSearch();
+            await RefreshList();
         }
     }
 
@@ -727,103 +615,6 @@
             ShowToast("New database created");
         }
 #endif
-    }
-
-    // Import state
-    private bool showImportPreview;
-    private bool showImportResult;
-    private ConfigExport? importData;
-    private ImportResult? importResult;
-    private ImportCollisionStrategy importStrategy = ImportCollisionStrategy.Skip;
-    private bool importHasCollisions;
-
-    // Export / Import
-    private async void ExportConfig()
-    {
-        try
-        {
-            var export = await ConfigExportSvc.BuildExportAsync();
-            var json = ConfigExportSvc.Serialize(export);
-            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
-            var fileName = $"fileindexer-config-{DateTime.Now:yyyyMMdd-HHmmss}.json";
-
-            using var stream = new MemoryStream(bytes);
-            var result = await CommunityToolkit.Maui.Storage.FileSaver.Default.SaveAsync(fileName, stream, default);
-            if (result.IsSuccessful)
-                ShowToast("Configuration exported");
-        }
-        catch (Exception ex)
-        {
-            ShowError($"Export failed: {ex.Message}");
-        }
-    }
-
-    private async void ImportConfig()
-    {
-        try
-        {
-            var fileResult = await FilePicker.Default.PickAsync(new PickOptions
-            {
-                PickerTitle = "Select configuration file",
-                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
-                {
-                    { DevicePlatform.WinUI, new[] { ".json" } },
-                    { DevicePlatform.macOS, new[] { "json" } },
-                    { DevicePlatform.iOS, new[] { "public.json" } },
-                    { DevicePlatform.Android, new[] { "application/json" } }
-                })
-            });
-
-            if (fileResult == null) return;
-
-            using var stream = await fileResult.OpenReadAsync();
-            using var reader = new StreamReader(stream);
-            var json = await reader.ReadToEndAsync();
-
-            importData = ConfigExportSvc.Deserialize(json);
-            if (importData == null || importData.Collections.Count == 0)
-            {
-                ShowError("No collections found in file.");
-                return;
-            }
-
-            var existingCollections = await Collections.GetAllAsync();
-            var existingNames = existingCollections.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            importHasCollisions = importData.Collections.Any(c => existingNames.Contains(c.Name));
-            importStrategy = ImportCollisionStrategy.Skip;
-            showImportPreview = true;
-            StateHasChanged();
-        }
-        catch (Exception ex)
-        {
-            ShowError($"Import failed: {ex.Message}");
-        }
-    }
-
-    private void CancelImport()
-    {
-        showImportPreview = false;
-        importData = null;
-    }
-
-    private async Task DoImport()
-    {
-        if (importData == null) return;
-
-        showImportPreview = false;
-
-        importResult = await ConfigExportSvc.ImportCollectionsAsync(importData, importStrategy);
-
-        await LoadCollections();
-
-        importData = null;
-        showImportResult = true;
-    }
-
-    private void CloseImportResult()
-    {
-        showImportResult = false;
-        importResult = null;
     }
 
     // UI helpers
@@ -852,18 +643,8 @@
         showError = false;
     }
 
-    private static string TruncatePath(string path, int maxLength)
-    {
-        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
-            return path;
-        return "..." + path[^(maxLength - 3)..];
-    }
-
     public void Dispose()
     {
         debounceTimer?.Dispose();
-#if DESKTOP
-        Scanner.OnProgressChanged -= OnScanProgress;
-#endif
     }
 }

@@ -1,5 +1,6 @@
 @inherits LayoutComponentBase
 @inject DatabasePathService DbPathService
+@inject IMauiFolderPickerService FolderPicker
 
 <div class="page-container">
     @if (!DbPathService.HasDatabasePath())
@@ -32,10 +33,10 @@
 
     private async Task SelectDatabase()
     {
-        var path = await DbPathService.PickDatabaseFileAsync();
+        var path = await FolderPicker.PickDatabaseFileAsync();
         if (path != null)
         {
-            // Force navigation to refresh
+            DbPathService.SetDatabasePath(path);
             StateHasChanged();
         }
     }

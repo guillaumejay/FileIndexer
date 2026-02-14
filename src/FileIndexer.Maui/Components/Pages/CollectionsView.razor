@@ -1,0 +1,451 @@
+@using FileIndexer.Models
+@inject CollectionService CollectionSvc
+@inject ConfigExportService ConfigExportSvc
+@implements IDisposable
+
+<div class="view-container">
+    <div class="collections-header">
+        <div class="collections-header-actions">
+            <button class="btn-secondary" @onclick="ExportConfig" title="Export configuration">Export</button>
+            <button class="btn-secondary" @onclick="ImportConfig" title="Import configuration">Import</button>
+        </div>
+        <button class="btn-primary" @onclick="() => OpenEditor(null)">+ New Collection</button>
+    </div>
+
+    <div class="collections-content">
+        @if (collections == null)
+        {
+            <div class="loading">Loading...</div>
+        }
+        else if (collections.Count == 0)
+        {
+            <div class="empty-state">
+                <p>No collections yet. Create one to start organizing your indexed files.</p>
+                <button class="btn-primary" @onclick="() => OpenEditor(null)">Create your first collection</button>
+            </div>
+        }
+        else
+        {
+            <div class="collection-grid">
+                @foreach (var collection in collections)
+                {
+                    <div class="collection-card">
+                        <div class="collection-header">
+                            <h3>@collection.Name</h3>
+                            <div class="collection-actions">
+                                @if (IsDesktop)
+                                {
+                                    <button class="btn-icon-sm" @onclick="() => StartIndexing(collection)" disabled="@(isScanning || collection.Paths.Count == 0)" title="Index">
+                                        🔄
+                                    </button>
+                                }
+                                <button class="btn-icon-sm" @onclick="() => OpenEditor(collection)" title="Edit">
+                                    ✏️
+                                </button>
+                                <button class="btn-icon-sm btn-danger-icon" @onclick="() => ConfirmDelete(collection)" title="Delete">
+                                    🗑️
+                                </button>
+                            </div>
+                        </div>
+                        @if (!string.IsNullOrEmpty(collection.Description))
+                        {
+                            <p class="collection-description">@collection.Description</p>
+                        }
+                        <div class="collection-paths">
+                            @if (collection.Paths.Count == 0)
+                            {
+                                <span class="no-paths">No paths configured</span>
+                            }
+                            else
+                            {
+                                @foreach (var p in collection.Paths)
+                                {
+                                    <div class="path-item" title="@p.Path">📁 @TruncatePath(p.Path, 40)</div>
+                                }
+                            }
+                        </div>
+                        <div class="collection-stats">
+                            @if (collection.FileCount > 0)
+                            {
+                                <span>📄 @collection.FileCount.ToString("N0") files</span>
+                                @if (collection.LastIndexedAtUtc.HasValue)
+                                {
+                                    <span>⏱️ @FormatRelativeTime(collection.LastIndexedAtUtc.Value)</span>
+                                }
+                            }
+                            else
+                            {
+                                <span class="never-indexed">Never indexed</span>
+                            }
+                        </div>
+
+                        @if (IsDesktop && scanningCollectionId == collection.Id && progress != null)
+                        {
+                            <div class="scan-progress">
+                                <div class="progress-bar-container">
+                                    <div class="progress-bar" style="width: @(Math.Min(progress.ProgressPercent, 100))%"></div>
+                                </div>
+                                <div class="progress-text">
+                                    @progress.FilesScanned.ToString("N0") files | @progress.Elapsed.ToString(@"mm\:ss")
+                                    @if (progress.IsComplete)
+                                    {
+                                        <span class="success">✅</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+@if (showEditor)
+{
+    <CollectionEditor
+        Collection="editingCollection"
+        OnSave="OnEditorSave"
+        OnCancel="CloseEditor"
+        CollectionService="CollectionSvc" />
+}
+
+@if (showDeleteConfirm && deletingCollection != null)
+{
+    <div class="settings-overlay" @onclick="CancelDelete">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Delete Collection</h3>
+                <p>Are you sure you want to delete "<strong>@deletingCollection.Name</strong>"?</p>
+                @if (deletingCollection.FileCount > 0)
+                {
+                    <p style="color: var(--warning);">⚠️ This will also delete @deletingCollection.FileCount.ToString("N0") indexed files.</p>
+                }
+                <div class="modal-actions">
+                    <button class="btn-secondary" @onclick="CancelDelete">Cancel</button>
+                    <button class="btn-danger" @onclick="DoDelete">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Import Preview Dialog *@
+@if (showImportPreview && importData != null)
+{
+    <div class="settings-overlay" @onclick="CancelImport">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Import Configuration</h3>
+                <p><strong>@importData.Collections.Count</strong> collection(s) found.</p>
+
+                @if (importHasCollisions)
+                {
+                    <p style="color: var(--warning);">Some names already exist:</p>
+                    <div style="display: flex; gap: 0.5rem; margin: 0.5rem 0;">
+                        <button class="@(importStrategy == ImportCollisionStrategy.Skip ? "btn-primary" : "btn-secondary")"
+                                @onclick="() => importStrategy = ImportCollisionStrategy.Skip">
+                            Skip
+                        </button>
+                        <button class="@(importStrategy == ImportCollisionStrategy.Rename ? "btn-primary" : "btn-secondary")"
+                                @onclick="() => importStrategy = ImportCollisionStrategy.Rename">
+                            Auto-rename
+                        </button>
+                    </div>
+                }
+
+                <div class="modal-actions">
+                    <button class="btn-secondary" @onclick="CancelImport">Cancel</button>
+                    <button class="btn-primary" @onclick="DoImport">Import</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@* Import Result Dialog *@
+@if (showImportResult && importResult != null)
+{
+    <div class="settings-overlay" @onclick="CloseImportResult">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Import Complete</h3>
+                <p><strong>@importResult.Imported</strong> imported, <strong>@importResult.Skipped</strong> skipped, <strong>@importResult.Renamed</strong> renamed.</p>
+                @if (importResult.Details.Count > 0)
+                {
+                    <ul style="font-size: 0.8125rem; color: var(--text-secondary); padding-left: 1.25rem;">
+                        @foreach (var detail in importResult.Details)
+                        {
+                            <li>@detail</li>
+                        }
+                    </ul>
+                }
+                <button class="btn-primary" style="margin-top: 0.5rem;" @onclick="CloseImportResult">OK</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Toast notification *@
+@if (showToast)
+{
+    <div class="toast">@toastMessage</div>
+}
+
+@code {
+    [Parameter] public EventCallback OnCollectionsChanged { get; set; }
+
+#if DESKTOP
+    private bool IsDesktop => true;
+    [Inject] private FileScannerService Scanner { get; set; } = default!;
+#else
+    private bool IsDesktop => false;
+    private void StartIndexing(Collection collection) { }
+#endif
+
+    private List<Collection>? collections;
+    private bool showEditor;
+    private Collection? editingCollection;
+    private bool showDeleteConfirm;
+    private Collection? deletingCollection;
+    private bool isScanning;
+    private int? scanningCollectionId;
+    private ScanProgress? progress;
+
+    // Import state
+    private bool showImportPreview;
+    private bool showImportResult;
+    private ConfigExport? importData;
+    private ImportResult? importResult;
+    private ImportCollisionStrategy importStrategy = ImportCollisionStrategy.Skip;
+    private bool importHasCollisions;
+
+    // Toast state
+    private bool showToast;
+    private string toastMessage = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+#if DESKTOP
+        Scanner.OnProgressChanged += OnProgressChanged;
+#endif
+        await LoadCollections();
+    }
+
+    public async Task RefreshCollections()
+    {
+        await LoadCollections();
+    }
+
+    private async Task LoadCollections()
+    {
+        collections = await CollectionSvc.GetAllAsync();
+    }
+
+    private void OpenEditor(Collection? collection)
+    {
+        editingCollection = collection;
+        showEditor = true;
+    }
+
+    private void CloseEditor()
+    {
+        showEditor = false;
+        editingCollection = null;
+    }
+
+    private async Task OnEditorSave()
+    {
+        CloseEditor();
+        await LoadCollections();
+        await OnCollectionsChanged.InvokeAsync();
+    }
+
+    private void ConfirmDelete(Collection collection)
+    {
+        deletingCollection = collection;
+        showDeleteConfirm = true;
+    }
+
+    private void CancelDelete()
+    {
+        showDeleteConfirm = false;
+        deletingCollection = null;
+    }
+
+    private async Task DoDelete()
+    {
+        if (deletingCollection != null)
+        {
+            await CollectionSvc.DeleteAsync(deletingCollection.Id);
+            await LoadCollections();
+            await OnCollectionsChanged.InvokeAsync();
+        }
+        CancelDelete();
+    }
+
+#if DESKTOP
+    private async Task StartIndexing(Collection collection)
+    {
+        if (isScanning || collection.Paths.Count == 0) return;
+
+        isScanning = true;
+        scanningCollectionId = collection.Id;
+        progress = new ScanProgress { IsRunning = true };
+
+        try
+        {
+            var paths = collection.Paths.Select(p => p.Path);
+            await Scanner.ScanCollectionAsync(collection.Id, paths);
+            await LoadCollections();
+            await OnCollectionsChanged.InvokeAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Scan error: {ex.Message}");
+        }
+        finally
+        {
+            isScanning = false;
+            scanningCollectionId = null;
+        }
+    }
+
+    private void OnProgressChanged(ScanProgress p)
+    {
+        progress = p;
+        InvokeAsync(StateHasChanged);
+    }
+#endif
+
+    // Export
+    private async void ExportConfig()
+    {
+        try
+        {
+            var export = await ConfigExportSvc.BuildExportAsync();
+            var json = ConfigExportSvc.Serialize(export);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            var fileName = $"fileindexer-config-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+
+            using var stream = new MemoryStream(bytes);
+            var result = await CommunityToolkit.Maui.Storage.FileSaver.Default.SaveAsync(fileName, stream, default);
+            if (result.IsSuccessful)
+                ShowToast("Configuration exported");
+        }
+        catch (Exception ex)
+        {
+            ShowToast($"Export failed: {ex.Message}");
+        }
+    }
+
+    // Import
+    private async void ImportConfig()
+    {
+        try
+        {
+            var fileResult = await FilePicker.Default.PickAsync(new PickOptions
+            {
+                PickerTitle = "Select configuration file",
+                FileTypes = new FilePickerFileType(new Dictionary<DevicePlatform, IEnumerable<string>>
+                {
+                    { DevicePlatform.WinUI, new[] { ".json" } },
+                    { DevicePlatform.macOS, new[] { "json" } },
+                    { DevicePlatform.iOS, new[] { "public.json" } },
+                    { DevicePlatform.Android, new[] { "application/json" } }
+                })
+            });
+
+            if (fileResult == null) return;
+
+            using var stream = await fileResult.OpenReadAsync();
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+
+            importData = ConfigExportSvc.Deserialize(json);
+            if (importData == null || importData.Collections.Count == 0)
+            {
+                ShowToast("No collections found in file.");
+                return;
+            }
+
+            var existingCollections = await CollectionSvc.GetAllAsync();
+            var existingNames = existingCollections.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            importHasCollisions = importData.Collections.Any(c => existingNames.Contains(c.Name));
+            importStrategy = ImportCollisionStrategy.Skip;
+            showImportPreview = true;
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            ShowToast($"Import failed: {ex.Message}");
+        }
+    }
+
+    private void CancelImport()
+    {
+        showImportPreview = false;
+        importData = null;
+    }
+
+    private async Task DoImport()
+    {
+        if (importData == null) return;
+
+        showImportPreview = false;
+
+        importResult = await ConfigExportSvc.ImportCollectionsAsync(importData, importStrategy);
+
+        await LoadCollections();
+        await OnCollectionsChanged.InvokeAsync();
+
+        importData = null;
+        showImportResult = true;
+    }
+
+    private void CloseImportResult()
+    {
+        showImportResult = false;
+        importResult = null;
+    }
+
+    private void ShowToast(string message)
+    {
+        toastMessage = message;
+        showToast = true;
+        StateHasChanged();
+
+        _ = Task.Delay(2000).ContinueWith(_ =>
+        {
+            showToast = false;
+            InvokeAsync(StateHasChanged);
+        });
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+        return path[..(maxLength - 3)] + "...";
+    }
+
+    private static string FormatRelativeTime(DateTime utcTime)
+    {
+        var elapsed = DateTime.UtcNow - utcTime;
+        if (elapsed.TotalMinutes < 1) return "just now";
+        if (elapsed.TotalMinutes < 60) return $"{(int)elapsed.TotalMinutes}m ago";
+        if (elapsed.TotalHours < 24) return $"{(int)elapsed.TotalHours}h ago";
+        return $"{(int)elapsed.TotalDays}d ago";
+    }
+
+    public void Dispose()
+    {
+#if DESKTOP
+        Scanner.OnProgressChanged -= OnProgressChanged;
+#endif
+    }
+}

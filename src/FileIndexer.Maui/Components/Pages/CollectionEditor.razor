@@ -1,0 +1,217 @@
+@using FileIndexer.Models
+@using FileIndexer.Services
+@inject IMauiFolderPickerService FolderPicker
+
+<div class="settings-overlay" @onclick="OnCancel">
+    <div class="settings-screen" @onclick:stopPropagation>
+        <div class="settings-section">
+            <h3>@(isNew ? "New Collection" : "Edit Collection")</h3>
+
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" @bind="name" @bind:event="oninput" placeholder="Collection name" />
+                @if (!string.IsNullOrEmpty(nameError))
+                {
+                    <span class="field-error">@nameError</span>
+                }
+            </div>
+
+            <div class="form-group">
+                <label>Description (optional)</label>
+                <input type="text" @bind="description" placeholder="Brief description" />
+            </div>
+
+            <div class="form-group">
+                <label>Paths</label>
+                <div class="path-list">
+                    @foreach (var path in paths)
+                    {
+                        <div class="path-entry">
+                            <span class="path-text" title="@path.Path">📁 @TruncatePath(path.Path, 45)</span>
+                            <button class="btn-icon-sm btn-danger-icon" @onclick="() => RemovePath(path)" title="Remove">✕</button>
+                        </div>
+                    }
+                </div>
+                <div class="add-path-row">
+                    <input type="text" @bind="newPath" @bind:event="oninput" placeholder="Enter directory path" @onkeyup="OnPathKeyUp" />
+                    <button class="btn-secondary" @onclick="BrowseForPath" title="Browse...">📂</button>
+                    <button class="btn-secondary" @onclick="AddPath" disabled="@string.IsNullOrWhiteSpace(newPath)">Add</button>
+                </div>
+                @if (!string.IsNullOrEmpty(pathError))
+                {
+                    <span class="field-error">@pathError</span>
+                }
+                @if (overlaps.Count > 0)
+                {
+                    <div class="overlap-warning">
+                        <span>⚠️ Path overlaps with:</span>
+                        <ul>
+                            @foreach (var overlap in overlaps)
+                            {
+                                <li>@overlap.CollectionName: @overlap.Path</li>
+                            }
+                        </ul>
+                        <span class="warning-note">Files may be indexed in multiple collections.</span>
+                    </div>
+                }
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn-secondary" @onclick="OnCancel">Cancel</button>
+                <button class="btn-primary" @onclick="Save" disabled="@string.IsNullOrWhiteSpace(name)">
+                    @(isNew ? "Create" : "Save")
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public Collection? Collection { get; set; }
+    [Parameter] public EventCallback OnSave { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public required CollectionService CollectionService { get; set; }
+
+    private bool isNew => Collection == null;
+    private string name = "";
+    private string? description;
+    private List<CollectionPath> paths = new();
+    private List<int> removedPathIds = new();
+    private string newPath = "";
+    private string? nameError;
+    private string? pathError;
+    private List<PathOverlap> overlaps = new();
+
+    protected override void OnParametersSet()
+    {
+        if (Collection != null)
+        {
+            name = Collection.Name;
+            description = Collection.Description;
+            paths = Collection.Paths.ToList();
+        }
+        else
+        {
+            name = "";
+            description = null;
+            paths = new();
+        }
+        removedPathIds = new();
+        newPath = "";
+        nameError = null;
+        pathError = null;
+        overlaps = new();
+    }
+
+    private async Task AddPath()
+    {
+        pathError = null;
+        overlaps = new();
+
+        if (string.IsNullOrWhiteSpace(newPath)) return;
+
+        var trimmedPath = newPath.Trim();
+
+        if (paths.Any(p => p.Path.Equals(trimmedPath, StringComparison.OrdinalIgnoreCase)))
+        {
+            pathError = "Path already added.";
+            return;
+        }
+
+        if (!Directory.Exists(trimmedPath))
+        {
+            pathError = "Directory does not exist.";
+            return;
+        }
+
+        var collectionId = Collection?.Id ?? 0;
+        overlaps = await CollectionService.CheckPathOverlapsAsync(collectionId, trimmedPath);
+
+        paths.Add(new CollectionPath { Id = 0, CollectionId = collectionId, Path = trimmedPath });
+        newPath = "";
+    }
+
+    private void OnPathKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            _ = AddPath();
+        }
+    }
+
+    private async Task BrowseForPath()
+    {
+        var path = await FolderPicker.PickFolderAsync();
+        if (path != null)
+        {
+            newPath = path;
+            await AddPath();
+        }
+    }
+
+    private void RemovePath(CollectionPath path)
+    {
+        if (path.Id > 0)
+        {
+            removedPathIds.Add(path.Id);
+        }
+        paths.Remove(path);
+    }
+
+    private async Task Save()
+    {
+        nameError = null;
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            nameError = "Name is required.";
+            return;
+        }
+
+        try
+        {
+            if (isNew)
+            {
+                var created = await CollectionService.CreateAsync(name.Trim(), description?.Trim());
+                foreach (var path in paths)
+                {
+                    await CollectionService.AddPathAsync(created.Id, path.Path);
+                }
+            }
+            else
+            {
+                await CollectionService.UpdateAsync(Collection!.Id, name.Trim(), description?.Trim());
+
+                foreach (var pathId in removedPathIds)
+                {
+                    await CollectionService.RemovePathAsync(pathId);
+                }
+
+                foreach (var path in paths.Where(p => p.Id == 0))
+                {
+                    await CollectionService.AddPathAsync(Collection!.Id, path.Path);
+                }
+            }
+
+            await OnSave.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            if (ex.Message.Contains("UNIQUE constraint"))
+            {
+                nameError = "A collection with this name already exists.";
+            }
+            else
+            {
+                nameError = "Error saving collection: " + ex.Message;
+            }
+        }
+    }
+
+    private static string TruncatePath(string path, int maxLength)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length <= maxLength)
+            return path;
+        return path[..(maxLength - 3)] + "...";
+    }
+}

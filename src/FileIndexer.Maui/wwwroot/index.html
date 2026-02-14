@@ -17,5 +17,17 @@
     </div>
 
     <script src="_framework/blazor.webview.js" autostart="false"></script>
+    <script>
+        window.themeInterop = {
+            setTheme: function (theme) {
+                var root = document.documentElement;
+                root.classList.remove('light-theme', 'dark-theme');
+                if (theme) root.classList.add(theme);
+            },
+            getSystemTheme: function () {
+                return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+            }
+        };
+    </script>
 </body>
 </html>
