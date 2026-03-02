@@ -6,6 +6,7 @@
 <div class="view-container">
     <div class="collections-header">
         <div class="collections-header-actions">
+            <button class="btn-secondary" @onclick="ReindexAll" disabled="@isScanning" title="Reindex all collections">Reindex all</button>
             <button class="btn-secondary" @onclick="ExportConfig" title="Export configuration">Export</button>
             <button class="btn-secondary" @onclick="ImportConfig" title="Import configuration">Import</button>
         </div>
@@ -29,14 +30,14 @@
             <div class="collection-grid">
                 @foreach (var collection in collections)
                 {
-                    <div class="collection-card">
+                    <div class="collection-card @(scanningCollectionId == collection.Id ? "scanning" : pendingReindexIds.Contains(collection.Id) ? "pending" : "")">
                         <div class="collection-header">
                             <h3>@collection.Name</h3>
                             <div class="collection-actions">
                                 @if (IsDesktop)
                                 {
                                     <button class="btn-icon-sm" @onclick="() => StartIndexing(collection)" disabled="@(isScanning || collection.Paths.Count == 0)" title="Index">
-                                        🔄
+                                        <span class="@(scanningCollectionId == collection.Id ? "icon-spin" : "")">🔄</span>
                                     </button>
                                     <button class="btn-icon-sm" @onclick="() => StartCleanEmptyFolders(collection)" disabled="@(collection.Paths.Count == 0)" title="Clean empty folders">
                                         🧹
@@ -95,6 +96,12 @@
                                         <span class="success">✅</span>
                                     }
                                 </div>
+                            </div>
+                        }
+                        else if (pendingReindexIds.Contains(collection.Id))
+                        {
+                            <div class="scan-progress pending">
+                                <span class="pending-text">⏳ Pending reindex...</span>
                             </div>
                         }
                     </div>
@@ -236,6 +243,7 @@
     private bool IsDesktop => false;
     private void StartIndexing(Collection collection) { }
     private void StartCleanEmptyFolders(Collection collection) { }
+    private void ReindexAll() { }
 #endif
 
     private List<Collection>? collections;
@@ -246,6 +254,7 @@
     private bool isScanning;
     private int? scanningCollectionId;
     private ScanProgress? progress;
+    private HashSet<int> pendingReindexIds = new();
 
     // Import state
     private bool showImportPreview;
@@ -351,6 +360,49 @@
         {
             isScanning = false;
             scanningCollectionId = null;
+        }
+    }
+
+    private async Task ReindexAll()
+    {
+        if (isScanning || collections == null) return;
+
+        var indexable = collections.Where(c => c.Paths.Count > 0).ToList();
+        if (indexable.Count == 0) return;
+
+        isScanning = true;
+        pendingReindexIds = new HashSet<int>(indexable.Select(c => c.Id));
+        StateHasChanged();
+
+        try
+        {
+            foreach (var collection in indexable)
+            {
+                pendingReindexIds.Remove(collection.Id);
+                scanningCollectionId = collection.Id;
+                progress = new ScanProgress { IsRunning = true };
+                StateHasChanged();
+
+                var paths = collection.Paths.Select(p => p.Path);
+                await Scanner.ScanCollectionAsync(collection.Id, paths);
+            }
+
+            await LoadCollections();
+            await OnCollectionsChanged.InvokeAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Reindex all error: {ex.Message}");
+        }
+        finally
+        {
+            isScanning = false;
+            scanningCollectionId = null;
+            pendingReindexIds.Clear();
         }
     }
 

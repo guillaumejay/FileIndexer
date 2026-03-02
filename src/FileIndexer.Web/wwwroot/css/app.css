@@ -821,6 +821,35 @@ button {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: 1rem;
+    transition: opacity 0.3s, filter 0.3s, border-color 0.3s;
+}
+
+.collection-card.pending {
+    opacity: 0.45;
+    filter: grayscale(0.8);
+    pointer-events: none;
+}
+
+.collection-card.scanning {
+    opacity: 0.7;
+    pointer-events: none;
+    border-color: var(--accent);
+    animation: card-pulse 2s ease-in-out infinite;
+}
+
+@keyframes card-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 transparent; }
+    50% { box-shadow: 0 0 12px 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+}
+
+.icon-spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
 }
 
 .collection-header {
@@ -920,6 +949,17 @@ button {
     font-size: 0.75rem;
     color: var(--text-secondary);
     margin-top: 0.5rem;
+}
+
+.scan-progress.pending .pending-text {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    animation: pulse-pending 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-pending {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
 }
 
 /* Collection Editor */

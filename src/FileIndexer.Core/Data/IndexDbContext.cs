@@ -166,7 +166,8 @@ public class IndexDbContext : IDisposable
         int limit = 100,
         int offset = 0,
         IEnumerable<int>? collectionIds = null,
-        IEnumerable<string>? extensionFilter = null)
+        IEnumerable<string>? extensionFilter = null,
+        string? directoryFilter = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var isSearch = !string.IsNullOrWhiteSpace(query);
@@ -199,6 +200,9 @@ public class IndexDbContext : IDisposable
             ? $"extension IN ({string.Join(",", extensionList!.Select((_, i) => $"@Ext{i}"))})"
             : "1=1";
 
+        // Build directory filter clause
+        var directoryClause = directoryFilter != null ? "f.directory = @DirectoryPath" : "1=1";
+
         var parameters = new DynamicParameters();
         parameters.Add("Limit", limit);
         parameters.Add("Offset", offset);
@@ -206,6 +210,10 @@ public class IndexDbContext : IDisposable
         {
             for (int i = 0; i < extensionList!.Count; i++)
                 parameters.Add($"Ext{i}", extensionList[i]);
+        }
+        if (directoryFilter != null)
+        {
+            parameters.Add("DirectoryPath", directoryFilter);
         }
 
         if (isSearch)
@@ -223,7 +231,7 @@ public class IndexDbContext : IDisposable
                 sql = $"""
                     SELECT f.* FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
                     GROUP BY f.path
                     ORDER BY {orderByColumn} {orderByDir}
                     LIMIT @Limit OFFSET @Offset
@@ -231,7 +239,7 @@ public class IndexDbContext : IDisposable
                 countSql = $"""
                     SELECT COUNT(DISTINCT f.path) FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
                     """;
             }
             else
@@ -239,14 +247,14 @@ public class IndexDbContext : IDisposable
                 sql = $"""
                     SELECT f.* FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
                     ORDER BY {orderByColumn} {orderByDir}
                     LIMIT @Limit OFFSET @Offset
                     """;
                 countSql = $"""
                     SELECT COUNT(*) FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
                     """;
             }
 
@@ -268,13 +276,13 @@ public class IndexDbContext : IDisposable
 
             if (needsDedup)
             {
-                sql = $"SELECT * FROM files WHERE {collectionClause} AND {extensionClause} GROUP BY path ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(DISTINCT path) FROM files WHERE {collectionClause} AND {extensionClause}";
+                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} GROUP BY f.path ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
+                countSql = $"SELECT COUNT(DISTINCT f.path) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause}";
             }
             else
             {
-                sql = $"SELECT * FROM files WHERE {collectionClause} AND {extensionClause} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(*) FROM files WHERE {collectionClause} AND {extensionClause}";
+                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
+                countSql = $"SELECT COUNT(*) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause}";
             }
 
             var allFiles = await _connection.QueryAsync<IndexedFileDto>(sql, parameters);

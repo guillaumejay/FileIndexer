@@ -157,6 +157,7 @@
         {
             <div class="context-menu-item" @onclick="OpenSelectedFile">Open</div>
             <div class="context-menu-item" @onclick="OpenSelectedFolder">Open Folder</div>
+            <div class="context-menu-item" @onclick="FilterByFolder">Select this folder</div>
             <div class="context-menu-item" @onclick="StartRename">Rename</div>
             @if (IsSelectedFileArchive())
             {
@@ -343,23 +344,26 @@
                 ? null
                 : selectedCollectionIds.AsEnumerable();
 
+            var (cleanQuery, directoryFilter) = ParseSearchQuery(searchQuery);
+
             var effectiveSortColumn = sortColumn;
             var effectiveDirection = sortAsc ? SortDirection.Asc : SortDirection.Desc;
 
-            if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortAsc)
+            if (!string.IsNullOrWhiteSpace(cleanQuery) && sortColumn == SortColumn.Name && sortAsc)
             {
                 effectiveSortColumn = SortColumn.Rank;
                 effectiveDirection = SortDirection.Asc;
             }
 
             var result = await Search.SearchWithSortAsync(
-                searchQuery,
+                cleanQuery,
                 effectiveSortColumn,
                 effectiveDirection,
                 request.Count,
                 request.StartIndex,
                 collectionIds,
-                GetExtensionFilter());
+                GetExtensionFilter(),
+                directoryFilter);
 
             totalCount = result.TotalCount;
             currentFiles = result.Files;
@@ -372,6 +376,32 @@
             System.Diagnostics.Debug.WriteLine($"Search error: {ex.Message}");
             totalCount = 0;
             return new ItemsProviderResult<IndexedFile>(new List<IndexedFile>(), 0);
+        }
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex DirFilterRegex = new(
+        @"dir:""([^""]+)""|dir:(\S+)",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private (string cleanQuery, string? directoryFilter) ParseSearchQuery(string query)
+    {
+        string? directoryFilter = null;
+        var clean = DirFilterRegex.Replace(query, m =>
+        {
+            directoryFilter = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            return "";
+        }).Trim();
+        return (clean, directoryFilter);
+    }
+
+    private async Task FilterByFolder()
+    {
+        CloseContextMenu();
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        if (file != null)
+        {
+            searchQuery = $"dir:\"{file.Directory}\"";
+            await RefreshList();
         }
     }
 

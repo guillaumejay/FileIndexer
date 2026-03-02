@@ -65,3 +65,5 @@ dotnet publish -c Release -r linux-x64 --self-contained -o ./publish/linux
 - Models in `Models/IndexedFile.cs` include DTOs for search results, stats, and scan progress
 - Blazor components in `Components/Pages/` - main UI is `Home.razor`
 - English comments and log messages throughout the codebase
+- Every modification done on the Web app should be also done on the MAUI app, and vice versa. The codebases are kept in sync as much as possible to avoid divergence.
+- Reduce code duplication by sharing services and data models between the Web and MAUI projects. The UI components are separate, but the underlying logic and data access layers are shared.

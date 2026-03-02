@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 17
-VisualStudioVersion = 17.5.2.0
+# Visual Studio Version 18
+VisualStudioVersion = 18.3.11520.95 d18.3
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FileIndexer.Web", "src\FileIndexer.Web\FileIndexer.Web.csproj", "{4FA19897-D388-C79C-2597-AE098D558E46}"
 EndProject
@@ -12,6 +12,11 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FileIndexer.Desktop", "src\FileIndexer.Desktop\FileIndexer.Desktop.csproj", "{2F2BF8DE-B8F8-4035-9059-F47FDC01DE98}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FileIndexer.Maui", "src\FileIndexer.Maui\FileIndexer.Maui.csproj", "{380E6D8C-C4CA-4C1D-93CF-21B7BAC1A839}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{A022B39E-A24F-4EA9-9EF6-8257E5FA8633}"
+	ProjectSection(SolutionItems) = preProject
+		CLAUDE.md = CLAUDE.md
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

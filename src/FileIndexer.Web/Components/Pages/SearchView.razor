@@ -137,6 +137,7 @@
     <div class="context-menu" style="left: @(contextMenuX)px; @(contextMenuStyle)">
         @if (selectedFileIds.Count == 1)
         {
+            <div class="context-menu-item" @onclick="FilterByFolder">S&eacute;lectionner ce dossier</div>
             <div class="context-menu-item" @onclick="StartRename">Renommer</div>
             @if (IsSelectedFileArchive())
             {
@@ -444,6 +445,18 @@
         }
     }
 
+    // Directory filter
+    private async Task FilterByFolder()
+    {
+        CloseContextMenu();
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        if (file != null)
+        {
+            searchQuery = $"dir:\"{file.Directory}\"";
+            await RefreshList();
+        }
+    }
+
     // Rename operations
     private void StartRename()
     {
@@ -730,25 +743,43 @@
         return selectedCollectionIds;
     }
 
+    private static readonly System.Text.RegularExpressions.Regex DirFilterRegex = new(
+        @"dir:""([^""]+)""|dir:(\S+)",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private (string cleanQuery, string? directoryFilter) ParseSearchQuery(string query)
+    {
+        string? directoryFilter = null;
+        var clean = DirFilterRegex.Replace(query, m =>
+        {
+            directoryFilter = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            return "";
+        }).Trim();
+        return (clean, directoryFilter);
+    }
+
     private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
     {
+        var (cleanQuery, directoryFilter) = ParseSearchQuery(searchQuery);
+
         var effectiveSortColumn = sortColumn;
         var effectiveSortDirection = sortDirection;
 
-        if (!string.IsNullOrWhiteSpace(searchQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc)
+        if (!string.IsNullOrWhiteSpace(cleanQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc)
         {
             effectiveSortColumn = SortColumn.Rank;
             effectiveSortDirection = SortDirection.Asc;
         }
 
         var result = await Search.SearchWithSortAsync(
-            searchQuery,
+            cleanQuery,
             effectiveSortColumn,
             effectiveSortDirection,
             request.Count,
             request.StartIndex,
             GetSelectedCollectionIds(),
-            GetExtensionFilter());
+            GetExtensionFilter(),
+            directoryFilter);
 
         totalCount = result.TotalCount;
         currentFiles = result.Files;
