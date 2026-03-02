@@ -65,6 +65,10 @@ public static class MauiProgram
         // File operations
         services.AddSingleton<FileOperationsService>();
 
+        // Activity log & archive services
+        services.AddSingleton<ActivityLogService>();
+        services.AddSingleton<ArchiveService>();
+
         // Platform-specific trash service
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {

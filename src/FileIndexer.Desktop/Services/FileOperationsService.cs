@@ -287,6 +287,58 @@ public class FileOperationsService
         return OperationResult.Success();
     }
 
+    public async Task<EmptyFolderCleanResult> CleanEmptyFoldersAsync(IEnumerable<string> paths)
+    {
+        var deletedFolders = new List<string>();
+        var errorCount = 0;
+
+        await Task.Run(() =>
+        {
+            foreach (var rootPath in paths)
+            {
+                if (!Directory.Exists(rootPath))
+                    continue;
+
+                CleanEmptyFoldersRecursive(rootPath, deletedFolders, ref errorCount);
+            }
+        });
+
+        return new EmptyFolderCleanResult
+        {
+            DeletedFolders = deletedFolders,
+            ErrorCount = errorCount
+        };
+    }
+
+    private static void CleanEmptyFoldersRecursive(string directory, List<string> deletedFolders, ref int errorCount)
+    {
+        try
+        {
+            foreach (var subDir in Directory.GetDirectories(directory))
+            {
+                CleanEmptyFoldersRecursive(subDir, deletedFolders, ref errorCount);
+            }
+
+            // After cleaning subdirectories, check if this directory is now empty
+            if (!Directory.EnumerateFileSystemEntries(directory).Any())
+            {
+                try
+                {
+                    Directory.Delete(directory);
+                    deletedFolders.Add(directory);
+                }
+                catch
+                {
+                    errorCount++;
+                }
+            }
+        }
+        catch
+        {
+            errorCount++;
+        }
+    }
+
     private static string GenerateUniqueName(string directory, string fileName)
     {
         var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
@@ -321,3 +373,4 @@ public enum ConflictResolution
     Replace,
     KeepBoth
 }
+

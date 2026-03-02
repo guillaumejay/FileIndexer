@@ -18,6 +18,7 @@
             </button>
         </div>
         <div style="flex: 1;"></div>
+        <ActivityIndicator />
         <button class="btn-icon" @onclick="ToggleTheme" title="Toggle theme">
             @(isLightTheme ? "🌙" : "☀️")
         </button>
@@ -146,6 +147,10 @@
             <div class="context-menu-item" @onclick="OpenSelectedFile">Open</div>
             <div class="context-menu-item" @onclick="OpenSelectedFolder">Open Folder</div>
             <div class="context-menu-item" @onclick="StartRename">Rename</div>
+            @if (IsSelectedFileArchive())
+            {
+                <div class="context-menu-item" @onclick="StartExtract">Extract</div>
+            }
         }
         <div class="context-menu-item" @onclick="CopySelectedPaths">Copy Path</div>
         @if (selectedFileIds.Count > 0)
@@ -211,11 +216,15 @@
 #if DESKTOP
     private bool IsDesktop => true;
     [Inject] private FileOperationsService FileOps { get; set; } = default!;
+    [Inject] private ActivityLogService ActivityLog { get; set; } = default!;
+    [Inject] private ArchiveService ArchiveSvc { get; set; } = default!;
 #else
     private bool IsDesktop => false;
+    private bool IsSelectedFileArchive() => false;
     private void OpenSelectedFile() { }
     private void OpenSelectedFolder() { }
     private void StartRename() { }
+    private void StartExtract() { }
     private void StartCopy() { }
     private void StartMove() { }
     private void DeleteSelected() { }
@@ -450,6 +459,13 @@
 
     // File operations (desktop only)
 #if DESKTOP
+    private bool IsSelectedFileArchive()
+    {
+        if (selectedFileIds.Count != 1) return false;
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        return file != null && ArchiveService.IsArchive(file.Name);
+    }
+
     private async void OpenSelectedFile()
     {
         CloseContextMenu();
@@ -480,20 +496,60 @@
         ShowToast("Rename not yet implemented in MAUI");
     }
 
+    private async void StartExtract()
+    {
+        CloseContextMenu();
+        var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
+        if (file == null) return;
+
+        var activity = ActivityLog.StartActivity($"Extracting \"{file.Name}\"");
+        try
+        {
+            var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
+            if (result.IsSuccess)
+            {
+                ActivityLog.CompleteActivity(activity.Id);
+                ShowToast($"Extracted {result.FileCount} file(s)");
+                await RefreshList();
+            }
+            else
+            {
+                ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
+                ShowError(result.ErrorMessage ?? "Failed to extract archive");
+            }
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
+            ShowError($"Extraction failed: {ex.Message}");
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
     private async void StartCopy()
     {
         CloseContextMenu();
         var destFolder = await FolderPicker.PickFolderAsync();
         if (destFolder != null)
         {
+            var count = selectedFileIds.Count;
+            var activity = ActivityLog.StartActivity($"Copying {count} file(s) to \"{destFolder}\"");
             var result = await FileOps.CopyFilesAsync(selectedFileIds, destFolder, HandleConflict);
             if (result.IsSuccess)
             {
+                ActivityLog.CompleteActivity(activity.Id);
                 ShowToast("Files copied");
                 await RefreshList();
             }
             else if (!result.IsCancelled)
+            {
+                ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
                 ShowError(result.ErrorMessage ?? "Failed to copy files");
+            }
+            else
+            {
+                ActivityLog.CompleteActivity(activity.Id);
+            }
         }
     }
 
@@ -503,30 +559,46 @@
         var destFolder = await FolderPicker.PickFolderAsync();
         if (destFolder != null)
         {
+            var count = selectedFileIds.Count;
+            var activity = ActivityLog.StartActivity($"Moving {count} file(s) to \"{destFolder}\"");
             var result = await FileOps.MoveFilesAsync(selectedFileIds, destFolder, HandleConflict);
             if (result.IsSuccess)
             {
+                ActivityLog.CompleteActivity(activity.Id);
                 ShowToast("Files moved");
                 selectedFileIds.Clear();
                 await RefreshList();
             }
             else if (!result.IsCancelled)
+            {
+                ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
                 ShowError(result.ErrorMessage ?? "Failed to move files");
+            }
+            else
+            {
+                ActivityLog.CompleteActivity(activity.Id);
+            }
         }
     }
 
     private async void DeleteSelected()
     {
         CloseContextMenu();
+        var count = selectedFileIds.Count;
+        var activity = ActivityLog.StartActivity($"Deleting {count} file(s)");
         var result = await FileOps.DeleteFilesAsync(selectedFileIds);
         if (result.IsSuccess)
         {
+            ActivityLog.CompleteActivity(activity.Id);
             ShowToast("Files deleted");
             selectedFileIds.Clear();
             await RefreshList();
         }
         else
+        {
+            ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
             ShowError(result.ErrorMessage ?? "Failed to delete files");
+        }
     }
 
     private Task<ConflictResolution> HandleConflict(string fileName, string destPath)

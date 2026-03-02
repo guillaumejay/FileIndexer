@@ -38,6 +38,8 @@ else
 }
 
 builder.Services.AddSingleton<FileOperationsService>();
+builder.Services.AddSingleton<ActivityLogService>();
+builder.Services.AddSingleton<ArchiveService>();
 
 var app = builder.Build();
 

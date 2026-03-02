@@ -3,6 +3,8 @@
 @inject AppSettings Settings
 @inject IJSRuntime JS
 @inject FileScannerService Scanner
+@inject FileOperationsService FileOps
+@inject ActivityLogService ActivityLog
 @implements IDisposable
 
 <div class="view-container">
@@ -40,6 +42,9 @@
                             <div class="collection-actions">
                                 <button class="btn-icon-sm" @onclick="() => StartIndexing(collection)" disabled="@(isScanning || collection.Paths.Count == 0)" title="Index">
                                     🔄
+                                </button>
+                                <button class="btn-icon-sm" @onclick="() => StartCleanEmptyFolders(collection)" disabled="@(collection.Paths.Count == 0)" title="Clean empty folders">
+                                    🧹
                                 </button>
                                 <button class="btn-icon-sm" @onclick="() => OpenEditor(collection)" title="Edit">
                                     ✏️
@@ -203,6 +208,40 @@
     </div>
 }
 
+@* Clean Empty Folders Result Dialog *@
+@if (showCleanResult && cleanResult != null)
+{
+    <div class="modal-overlay" @onclick="CloseCleanResult">
+        <div class="modal-content modal-large" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Empty Folders Cleaned</h2>
+                <button class="modal-close" @onclick="CloseCleanResult">&#x2715;</button>
+            </div>
+            <div class="modal-body">
+                <p><strong>@cleanResult.DeletedFolders.Count</strong> empty folder(s) deleted.</p>
+                @if (cleanResult.ErrorCount > 0)
+                {
+                    <p class="warning">&#x26a0;&#xfe0f; @cleanResult.ErrorCount error(s) encountered.</p>
+                }
+                @if (cleanResult.DeletedFolders.Count > 0)
+                {
+                    <div style="max-height: 300px; overflow-y: auto; margin-top: 0.75rem;">
+                        <ul style="font-size: 0.8125rem; color: var(--text-secondary); padding-left: 1.25rem; font-family: monospace;">
+                            @foreach (var folder in cleanResult.DeletedFolders)
+                            {
+                                <li>@folder</li>
+                            }
+                        </ul>
+                    </div>
+                }
+                <div class="modal-actions">
+                    <button class="btn-primary" @onclick="CloseCleanResult">OK</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     [Parameter] public EventCallback OnCollectionsChanged { get; set; }
 
@@ -222,6 +261,10 @@
     private ImportResult? importResult;
     private ImportCollisionStrategy importStrategy = ImportCollisionStrategy.Skip;
     private bool importHasCollisions;
+
+    // Clean empty folders state
+    private bool showCleanResult;
+    private EmptyFolderCleanResult? cleanResult;
 
     protected override async Task OnInitializedAsync()
     {
@@ -315,6 +358,39 @@
     {
         progress = p;
         InvokeAsync(StateHasChanged);
+    }
+
+    // Clean empty folders
+    private async Task StartCleanEmptyFolders(Collection collection)
+    {
+        if (collection.Paths.Count == 0) return;
+
+        var activity = ActivityLog.StartActivity($"Cleaning empty folders in \"{collection.Name}\"");
+
+        try
+        {
+            var paths = collection.Paths.Select(p => p.Path);
+            cleanResult = await FileOps.CleanEmptyFoldersAsync(paths);
+
+            if (cleanResult.DeletedFolders.Count > 0 || cleanResult.ErrorCount > 0)
+            {
+                showCleanResult = true;
+            }
+
+            ActivityLog.CompleteActivity(activity.Id);
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
+        }
+
+        StateHasChanged();
+    }
+
+    private void CloseCleanResult()
+    {
+        showCleanResult = false;
+        cleanResult = null;
     }
 
     // Export / Import

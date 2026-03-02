@@ -38,6 +38,9 @@
                                     <button class="btn-icon-sm" @onclick="() => StartIndexing(collection)" disabled="@(isScanning || collection.Paths.Count == 0)" title="Index">
                                         🔄
                                     </button>
+                                    <button class="btn-icon-sm" @onclick="() => StartCleanEmptyFolders(collection)" disabled="@(collection.Paths.Count == 0)" title="Clean empty folders">
+                                        🧹
+                                    </button>
                                 }
                                 <button class="btn-icon-sm" @onclick="() => OpenEditor(collection)" title="Edit">
                                     ✏️
@@ -186,6 +189,35 @@
     </div>
 }
 
+@* Clean Empty Folders Result Dialog *@
+@if (showCleanResult && cleanResult != null)
+{
+    <div class="settings-overlay" @onclick="CloseCleanResult">
+        <div class="settings-screen" @onclick:stopPropagation>
+            <div class="settings-section">
+                <h3>Empty Folders Cleaned</h3>
+                <p><strong>@cleanResult.DeletedFolders.Count</strong> empty folder(s) deleted.</p>
+                @if (cleanResult.ErrorCount > 0)
+                {
+                    <p style="color: var(--warning);">&#x26a0;&#xfe0f; @cleanResult.ErrorCount error(s) encountered.</p>
+                }
+                @if (cleanResult.DeletedFolders.Count > 0)
+                {
+                    <div style="max-height: 300px; overflow-y: auto; margin-top: 0.75rem;">
+                        <ul style="font-size: 0.8125rem; color: var(--text-secondary); padding-left: 1.25rem; font-family: monospace;">
+                            @foreach (var folder in cleanResult.DeletedFolders)
+                            {
+                                <li>@folder</li>
+                            }
+                        </ul>
+                    </div>
+                }
+                <button class="btn-primary" style="margin-top: 0.5rem;" @onclick="CloseCleanResult">OK</button>
+            </div>
+        </div>
+    </div>
+}
+
 @* Toast notification *@
 @if (showToast)
 {
@@ -198,9 +230,12 @@
 #if DESKTOP
     private bool IsDesktop => true;
     [Inject] private FileScannerService Scanner { get; set; } = default!;
+    [Inject] private FileOperationsService FileOps { get; set; } = default!;
+    [Inject] private ActivityLogService ActivityLog { get; set; } = default!;
 #else
     private bool IsDesktop => false;
     private void StartIndexing(Collection collection) { }
+    private void StartCleanEmptyFolders(Collection collection) { }
 #endif
 
     private List<Collection>? collections;
@@ -219,6 +254,10 @@
     private ImportResult? importResult;
     private ImportCollisionStrategy importStrategy = ImportCollisionStrategy.Skip;
     private bool importHasCollisions;
+
+    // Clean empty folders state
+    private bool showCleanResult;
+    private EmptyFolderCleanResult? cleanResult;
 
     // Toast state
     private bool showToast;
@@ -320,7 +359,44 @@
         progress = p;
         InvokeAsync(StateHasChanged);
     }
+
+    private async void StartCleanEmptyFolders(Collection collection)
+    {
+        if (collection.Paths.Count == 0) return;
+
+        var activity = ActivityLog.StartActivity($"Cleaning empty folders in \"{collection.Name}\"");
+
+        try
+        {
+            var paths = collection.Paths.Select(p => p.Path);
+            cleanResult = await FileOps.CleanEmptyFoldersAsync(paths);
+
+            if (cleanResult.DeletedFolders.Count > 0 || cleanResult.ErrorCount > 0)
+            {
+                showCleanResult = true;
+            }
+            else
+            {
+                ShowToast("No empty folders found");
+            }
+
+            ActivityLog.CompleteActivity(activity.Id);
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
+            ShowToast($"Error: {ex.Message}");
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
 #endif
+
+    private void CloseCleanResult()
+    {
+        showCleanResult = false;
+        cleanResult = null;
+    }
 
     // Export
     private async void ExportConfig()

@@ -1,5 +1,7 @@
 @inject SearchService Search
 @inject FileOperationsService FileOps
+@inject ArchiveService ArchiveSvc
+@inject ActivityLogService ActivityLog
 @inject IJSRuntime JS
 @implements IDisposable
 
@@ -125,9 +127,13 @@
         @if (selectedFileIds.Count == 1)
         {
             <div class="context-menu-item" @onclick="StartRename">Renommer</div>
+            @if (IsSelectedFileArchive())
+            {
+                <div class="context-menu-item" @onclick="StartExtract">D&eacute;sarchiver</div>
+            }
         }
         <div class="context-menu-item" @onclick="StartCopy">Copier vers...</div>
-        <div class="context-menu-item" @onclick="StartMove">Déplacer vers...</div>
+        <div class="context-menu-item" @onclick="StartMove">D&eacute;placer vers...</div>
         <div class="context-menu-item context-menu-danger" @onclick="StartDelete">Supprimer</div>
     </div>
 }
@@ -458,14 +464,21 @@
 
         if (string.IsNullOrEmpty(newName)) return;
 
+        var activity = ActivityLog.StartActivity($"Renaming to \"{newName}\"");
         var result = await FileOps.RenameFileAsync(fileId, newName, HandleConflict);
         if (!result.IsSuccess && !result.IsCancelled)
         {
+            ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
             ShowError(result.ErrorMessage ?? "Erreur lors du renommage");
         }
         else if (result.IsSuccess)
         {
+            ActivityLog.CompleteActivity(activity.Id);
             await RefreshList();
+        }
+        else
+        {
+            ActivityLog.CompleteActivity(activity.Id);
         }
     }
 
@@ -491,6 +504,47 @@
         await ShowFolderPicker();
     }
 
+    // Extract operation
+    private bool IsSelectedFileArchive()
+    {
+        if (selectedFileIds.Count != 1) return false;
+        var fileId = selectedFileIds.First();
+        var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
+        return file != null && ArchiveService.IsArchive(file.Name);
+    }
+
+    private async Task StartExtract()
+    {
+        CloseContextMenu();
+        if (selectedFileIds.Count != 1) return;
+
+        var fileId = selectedFileIds.First();
+        var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
+        if (file == null) return;
+
+        var activity = ActivityLog.StartActivity($"Extracting \"{file.Name}\"");
+
+        try
+        {
+            var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
+            if (!result.IsSuccess)
+            {
+                ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Unknown error");
+                ShowError(result.ErrorMessage ?? "Erreur lors de l'extraction");
+            }
+            else
+            {
+                ActivityLog.CompleteActivity(activity.Id);
+                await RefreshList();
+            }
+        }
+        catch (Exception ex)
+        {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
+            ShowError($"Erreur lors de l'extraction : {ex.Message}");
+        }
+    }
+
     // Delete operation
     private async Task StartDelete()
     {
@@ -502,13 +556,17 @@
     {
         if (selectedFileIds.Count == 0) return;
 
+        var count = selectedFileIds.Count;
+        var activity = ActivityLog.StartActivity($"Deleting {count} file(s)");
         var result = await FileOps.DeleteFilesAsync(selectedFileIds);
         if (!result.IsSuccess)
         {
+            ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
             ShowError(result.ErrorMessage ?? "Erreur lors de la suppression");
         }
         else
         {
+            ActivityLog.CompleteActivity(activity.Id);
             selectedFileIds.Clear();
             await RefreshList();
         }
@@ -542,6 +600,10 @@
 
     private async Task ExecutePendingOperation(string destinationFolder)
     {
+        var opName = pendingOperation == FileOperationType.Copy ? "Copying" : "Moving";
+        var count = selectedFileIds.Count;
+        var activity = ActivityLog.StartActivity($"{opName} {count} file(s) to \"{destinationFolder}\"");
+
         OperationResult result;
 
         if (pendingOperation == FileOperationType.Copy)
@@ -555,12 +617,18 @@
 
         if (!result.IsSuccess && !result.IsCancelled)
         {
+            ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
             ShowError(result.ErrorMessage ?? "Erreur lors de l'opération");
         }
         else if (result.IsSuccess)
         {
+            ActivityLog.CompleteActivity(activity.Id);
             selectedFileIds.Clear();
             await RefreshList();
+        }
+        else
+        {
+            ActivityLog.CompleteActivity(activity.Id);
         }
     }
 

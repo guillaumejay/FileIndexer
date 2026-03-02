@@ -1,0 +1,132 @@
+@implements IDisposable
+
+@if (IsDesktop)
+{
+    <div class="activity-indicator" @onclick="TogglePanel" @onclick:stopPropagation>
+        @if (runningCount > 0)
+        {
+            <span class="activity-badge running" title="@runningCount action(s) en cours">
+                <span class="activity-spinner"></span> @runningCount
+            </span>
+        }
+        else
+        {
+            <span class="activity-badge idle" title="Activity log">
+                &#x1f4cb;
+            </span>
+        }
+    </div>
+
+    @if (showPanel)
+    {
+        <div class="activity-overlay" @onclick="ClosePanel"></div>
+        <div class="activity-panel">
+            <div class="activity-panel-header">
+                <span>Activity Log</span>
+                <button class="modal-close" @onclick="ClosePanel">&#x2715;</button>
+            </div>
+            <div class="activity-panel-body">
+                @if (entries.Count == 0)
+                {
+                    <div class="activity-empty">No recent activity</div>
+                }
+                else
+                {
+                    @foreach (var entry in entries)
+                    {
+                        <div class="activity-entry @entry.Status.ToString().ToLower()">
+                            <span class="activity-icon">
+                                @switch (entry.Status)
+                                {
+                                    case ActivityStatus.Running:
+                                        <span class="activity-spinner-sm"></span>
+                                        break;
+                                    case ActivityStatus.Success:
+                                        <text>&#x2705;</text>
+                                        break;
+                                    case ActivityStatus.Error:
+                                        <text>&#x274c;</text>
+                                        break;
+                                }
+                            </span>
+                            <span class="activity-desc">
+                                @entry.Description
+                                @if (entry.Duration.HasValue)
+                                {
+                                    <span class="activity-duration">@FormatDuration(entry.Duration.Value)</span>
+                                }
+                                @if (!string.IsNullOrEmpty(entry.ErrorMessage))
+                                {
+                                    <span class="activity-error">@entry.ErrorMessage</span>
+                                }
+                            </span>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+    }
+}
+
+@code {
+#if DESKTOP
+    private bool IsDesktop => true;
+    [Inject] private ActivityLogService ActivityLog { get; set; } = default!;
+#else
+    private bool IsDesktop => false;
+#endif
+
+    private bool showPanel;
+    private int runningCount;
+    private List<ActivityEntry> entries = new();
+
+    protected override void OnInitialized()
+    {
+#if DESKTOP
+        ActivityLog.OnChanged += OnActivityChanged;
+        Refresh();
+#endif
+    }
+
+    private void OnActivityChanged()
+    {
+        InvokeAsync(() =>
+        {
+            Refresh();
+            StateHasChanged();
+        });
+    }
+
+    private void Refresh()
+    {
+#if DESKTOP
+        entries = ActivityLog.Entries.ToList();
+        runningCount = ActivityLog.RunningCount;
+#endif
+    }
+
+    private void TogglePanel()
+    {
+        showPanel = !showPanel;
+        if (showPanel) Refresh();
+    }
+
+    private void ClosePanel()
+    {
+        showPanel = false;
+    }
+
+    private static string FormatDuration(TimeSpan duration)
+    {
+        if (duration.TotalSeconds < 1) return "< 1s";
+        if (duration.TotalMinutes < 1) return $"{(int)duration.TotalSeconds}s";
+        return $"{(int)duration.TotalMinutes}m{duration.Seconds:D2}s";
+    }
+
+    public void Dispose()
+    {
+#if DESKTOP
+        ActivityLog.OnChanged -= OnActivityChanged;
+#endif
+    }
+}
