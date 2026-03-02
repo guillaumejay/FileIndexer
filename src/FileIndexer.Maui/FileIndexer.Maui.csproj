@@ -32,6 +32,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- App Icon -->
+    <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="Resources\AppIcon\appiconfg.svg" Color="#2563eb" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\FileIndexer.Core\FileIndexer.Core.csproj" />
   </ItemGroup>
 
