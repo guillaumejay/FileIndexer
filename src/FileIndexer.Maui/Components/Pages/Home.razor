@@ -42,10 +42,21 @@
             </div>
         </div>
 
-        @* Collection filter *@
-        @if (availableCollections.Count > 1)
-        {
-            <div class="collection-filter">
+        @* Filters *@
+        <div class="collection-filter">
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.All ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.All)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.All)" />
+                Tout
+            </label>
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.Archives ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.Archives)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.Archives)" />
+                Archives
+            </label>
+            @if (availableCollections.Count > 1)
+            {
+                <span class="filter-separator">|</span>
                 @foreach (var col in availableCollections)
                 {
                     <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
@@ -55,8 +66,8 @@
                         @col.Name
                     </label>
                 }
-            </div>
-        }
+            }
+        </div>
 
         @* File list *@
         <div class="file-list-container">
@@ -150,6 +161,7 @@
             @if (IsSelectedFileArchive())
             {
                 <div class="context-menu-item" @onclick="StartExtract">Extract</div>
+                <div class="context-menu-item" @onclick="StartExtractAndDelete">Extract &amp; delete archive</div>
             }
         }
         <div class="context-menu-item" @onclick="CopySelectedPaths">Copy Path</div>
@@ -225,6 +237,7 @@
     private void OpenSelectedFolder() { }
     private void StartRename() { }
     private void StartExtract() { }
+    private void StartExtractAndDelete() { }
     private void StartCopy() { }
     private void StartMove() { }
     private void DeleteSelected() { }
@@ -239,6 +252,7 @@
     private List<Collection> availableCollections = new();
     private HashSet<int> selectedCollectionIds = new();
     private int totalCount;
+    private FileTypeFilter fileTypeFilter = FileTypeFilter.All;
 
     private Virtualize<IndexedFile>? virtualizeRef;
 
@@ -287,6 +301,7 @@
         {
             _themeApplied = true;
             await ApplyTheme();
+            try { await JS.InvokeVoidAsync("initColumnResize", ".file-list-table"); } catch { }
         }
     }
 
@@ -343,7 +358,8 @@
                 effectiveDirection,
                 request.Count,
                 request.StartIndex,
-                collectionIds);
+                collectionIds,
+                GetExtensionFilter());
 
             totalCount = result.TotalCount;
             currentFiles = result.Files;
@@ -496,18 +512,28 @@
         ShowToast("Rename not yet implemented in MAUI");
     }
 
-    private async void StartExtract()
+    private void StartExtract() => DoExtract(deleteAfter: false);
+
+    private void StartExtractAndDelete() => DoExtract(deleteAfter: true);
+
+    private async void DoExtract(bool deleteAfter)
     {
         CloseContextMenu();
         var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
         if (file == null) return;
 
-        var activity = ActivityLog.StartActivity($"Extracting \"{file.Name}\"");
+        var label = deleteAfter ? "Extracting & deleting" : "Extracting";
+        var activity = ActivityLog.StartActivity($"{label} \"{file.Name}\"");
         try
         {
             var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
             if (result.IsSuccess)
             {
+                if (deleteAfter)
+                {
+                    await FileOps.DeleteFilesAsync(new[] { file.Id });
+                    selectedFileIds.Clear();
+                }
                 ActivityLog.CompleteActivity(activity.Id);
                 ShowToast($"Extracted {result.FileCount} file(s)");
                 await RefreshList();
@@ -713,6 +739,26 @@
     private void CloseError()
     {
         showError = false;
+    }
+
+    // Type filter
+    private static readonly string[] ArchiveExtensions = { ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz" };
+
+    private IEnumerable<string>? GetExtensionFilter()
+    {
+        return fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null;
+    }
+
+    private void SetTypeFilter(FileTypeFilter filter)
+    {
+        fileTypeFilter = filter;
+        _ = RefreshList();
+    }
+
+    private enum FileTypeFilter
+    {
+        All,
+        Archives
     }
 
     public void Dispose()

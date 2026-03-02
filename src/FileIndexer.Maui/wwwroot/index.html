@@ -18,6 +18,44 @@
 
     <script src="_framework/blazor.webview.js" autostart="false"></script>
     <script>
+        window.initColumnResize = function (tableSelector) {
+            var table = document.querySelector(tableSelector);
+            if (!table) return;
+            var cols = table.querySelectorAll('th');
+            cols.forEach(function (th) {
+                if (th.querySelector('.col-resize-handle')) return;
+                var handle = document.createElement('div');
+                handle.className = 'col-resize-handle';
+                th.appendChild(handle);
+                var startX, startW, didDrag;
+                handle.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                });
+                handle.addEventListener('mousedown', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startX = e.pageX;
+                    startW = th.offsetWidth;
+                    didDrag = false;
+                    document.body.style.cursor = 'col-resize';
+                    document.body.style.userSelect = 'none';
+                    var onMove = function (e2) {
+                        didDrag = true;
+                        var w = startW + (e2.pageX - startX);
+                        if (w > 30) th.style.width = w + 'px';
+                    };
+                    var onUp = function () {
+                        document.body.style.cursor = '';
+                        document.body.style.userSelect = '';
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
+                });
+            });
+        };
         window.themeInterop = {
             setTheme: function (theme) {
                 var root = document.documentElement;

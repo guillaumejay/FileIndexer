@@ -129,6 +129,12 @@ body {
     color: var(--border);
 }
 
+.filter-separator {
+    color: var(--border);
+    font-size: 0.875rem;
+    user-select: none;
+}
+
 /* Collection Filter */
 .collection-filter {
     display: flex;
@@ -171,7 +177,7 @@ body {
 .file-list-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     table-layout: fixed;
 }
 
@@ -194,10 +200,12 @@ body {
     color: var(--text-secondary);
     font-weight: 500;
     text-transform: uppercase;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     letter-spacing: 0.05em;
     border-bottom: 1px solid var(--border);
     min-height: var(--touch-target);
+    position: relative;
+    overflow: hidden;
 }
 
 .file-list-table th.sorted {
@@ -213,13 +221,35 @@ body {
     opacity: 1;
 }
 
+/* Column resize handle */
+.col-resize-handle {
+    position: absolute;
+    right: -3px;
+    top: 0;
+    bottom: 0;
+    width: 7px;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 2;
+}
+
+.col-resize-handle:hover {
+    background: var(--accent);
+    opacity: 0.6;
+}
+
+.col-resize-handle:active {
+    background: var(--accent);
+    opacity: 1;
+}
+
 /* Mobile-optimized rows - 44px minimum */
 .file-list-table td {
     padding: 0.75rem;
     border-bottom: 1px solid var(--border);
     color: var(--text-primary);
     font-family: monospace;
-    font-size: 0.875rem;
+    font-size: 0.8125rem;
     min-height: var(--touch-target);
 }
 

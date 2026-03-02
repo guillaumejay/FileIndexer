@@ -15,9 +15,20 @@
                    @onkeyup="OnSearchKeyUp"
                    placeholder="Search..." />
         </div>
-        @if (AvailableCollections.Count > 0)
-        {
-            <div class="collection-filter">
+        <div class="collection-filter">
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.All ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.All)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.All)" />
+                Tout
+            </label>
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.Archives ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.Archives)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.Archives)" />
+                Archives
+            </label>
+            @if (AvailableCollections.Count > 0)
+            {
+                <span class="filter-separator">|</span>
                 @foreach (var col in AvailableCollections)
                 {
                     <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
@@ -27,8 +38,8 @@
                         @col.Name
                     </label>
                 }
-            </div>
-        }
+            }
+        </div>
     </div>
 
     <div class="stats-row">
@@ -123,13 +134,14 @@
 
 @if (contextMenuVisible)
 {
-    <div class="context-menu" style="left: @(contextMenuX)px; top: @(contextMenuY)px;">
+    <div class="context-menu" style="left: @(contextMenuX)px; @(contextMenuStyle)">
         @if (selectedFileIds.Count == 1)
         {
             <div class="context-menu-item" @onclick="StartRename">Renommer</div>
             @if (IsSelectedFileArchive())
             {
                 <div class="context-menu-item" @onclick="StartExtract">D&eacute;sarchiver</div>
+                <div class="context-menu-item" @onclick="StartExtractAndDelete">D&eacute;sarchiver et effacer l'archive</div>
             }
         }
         <div class="context-menu-item" @onclick="StartCopy">Copier vers...</div>
@@ -174,6 +186,7 @@
     private HashSet<int> selectedCollectionIds = new();
     private IndexStats? stats;
     private bool showCopyNotification = false;
+    private FileTypeFilter fileTypeFilter = FileTypeFilter.All;
 
     // Selection state
     private HashSet<long> selectedFileIds = new();
@@ -192,7 +205,8 @@
     // Context menu state
     private bool contextMenuVisible;
     private double contextMenuX;
-    private double contextMenuY;
+    private string contextMenuStyle = "";
+    private double viewportHeight = 800;
 
     // Folder browser state
     private bool showFolderBrowser;
@@ -237,6 +251,12 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender)
+        {
+            try { await JS.InvokeVoidAsync("initColumnResize", ".file-list-table"); } catch { }
+            try { viewportHeight = await JS.InvokeAsync<double>("eval", "window.innerHeight"); } catch { }
+        }
+
         if (editingFileId.HasValue && editingExtensionStart > 0)
         {
             try
@@ -349,7 +369,7 @@
     }
 
     // Context menu
-    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    private async Task OnRowContextMenu(MouseEventArgs e, IndexedFile file)
     {
         // If right-clicking on a non-selected file, select only that file
         if (!selectedFileIds.Contains(file.Id))
@@ -359,8 +379,19 @@
             anchorFileId = file.Id;
         }
 
+        try { viewportHeight = await JS.InvokeAsync<double>("eval", "window.innerHeight"); } catch { }
         contextMenuX = e.ClientX;
-        contextMenuY = e.ClientY;
+        // Estimate menu height: ~7 items * 32px + padding
+        var estimatedMenuHeight = 250;
+        var spaceBelow = viewportHeight - e.ClientY;
+        if (spaceBelow < estimatedMenuHeight && e.ClientY > estimatedMenuHeight)
+        {
+            contextMenuStyle = $"bottom: {viewportHeight - e.ClientY}px;";
+        }
+        else
+        {
+            contextMenuStyle = $"top: {e.ClientY}px;";
+        }
         contextMenuVisible = true;
     }
 
@@ -513,7 +544,11 @@
         return file != null && ArchiveService.IsArchive(file.Name);
     }
 
-    private async Task StartExtract()
+    private Task StartExtract() => DoExtract(deleteAfter: false);
+
+    private Task StartExtractAndDelete() => DoExtract(deleteAfter: true);
+
+    private async Task DoExtract(bool deleteAfter)
     {
         CloseContextMenu();
         if (selectedFileIds.Count != 1) return;
@@ -522,7 +557,8 @@
         var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
         if (file == null) return;
 
-        var activity = ActivityLog.StartActivity($"Extracting \"{file.Name}\"");
+        var label = deleteAfter ? "Extracting & deleting" : "Extracting";
+        var activity = ActivityLog.StartActivity($"{label} \"{file.Name}\"");
 
         try
         {
@@ -534,6 +570,11 @@
             }
             else
             {
+                if (deleteAfter)
+                {
+                    await FileOps.DeleteFilesAsync(new[] { fileId });
+                    selectedFileIds.Clear();
+                }
                 ActivityLog.CompleteActivity(activity.Id);
                 await RefreshList();
             }
@@ -706,7 +747,8 @@
             effectiveSortDirection,
             request.Count,
             request.StartIndex,
-            GetSelectedCollectionIds());
+            GetSelectedCollectionIds(),
+            GetExtensionFilter());
 
         totalCount = result.TotalCount;
         currentFiles = result.Files;
@@ -771,6 +813,25 @@
     {
         debounceTimer?.Dispose();
         notificationTimer?.Dispose();
+    }
+
+    private static readonly string[] ArchiveExtensions = { ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz" };
+
+    private IEnumerable<string>? GetExtensionFilter()
+    {
+        return fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null;
+    }
+
+    private void SetTypeFilter(FileTypeFilter filter)
+    {
+        fileTypeFilter = filter;
+        _ = RefreshList();
+    }
+
+    private enum FileTypeFilter
+    {
+        All,
+        Archives
     }
 
     private enum FileOperationType

@@ -27,11 +27,12 @@ public class SearchService
         SortDirection sortDirection,
         int limit = 100,
         int offset = 0,
-        IEnumerable<int>? collectionIds = null)
+        IEnumerable<int>? collectionIds = null,
+        IEnumerable<string>? extensionFilter = null)
     {
         _logger.LogDebug("Search with sort: {Query}, {Column} {Direction}, Collections: {Collections}",
             query, sortColumn, sortDirection, collectionIds != null ? string.Join(",", collectionIds) : "all");
-        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset, collectionIds);
+        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset, collectionIds, extensionFilter);
     }
 
     public async Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
