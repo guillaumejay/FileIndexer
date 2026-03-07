@@ -56,6 +56,18 @@
                 });
             });
         };
+        window.adjustContextMenu = function () {
+            var menu = document.querySelector('.context-menu');
+            if (!menu) return;
+            var rect = menu.getBoundingClientRect();
+            var margin = 8;
+            if (rect.bottom > window.innerHeight - margin) {
+                menu.style.top = Math.max(margin, window.innerHeight - rect.height - margin) + 'px';
+            }
+            if (rect.right > window.innerWidth - margin) {
+                menu.style.left = Math.max(margin, window.innerWidth - rect.width - margin) + 'px';
+            }
+        };
         window.themeInterop = {
             setTheme: function (theme) {
                 var root = document.documentElement;

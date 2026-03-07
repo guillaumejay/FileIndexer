@@ -467,7 +467,7 @@
         }
     }
 
-    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    private async Task OnRowContextMenu(MouseEventArgs e, IndexedFile file)
     {
         if (!selectedFileIds.Contains(file.Id))
         {
@@ -480,6 +480,9 @@
             contextMenuX = e.ClientX;
             contextMenuY = e.ClientY;
             contextMenuVisible = true;
+            StateHasChanged();
+            await Task.Yield();
+            try { await JS.InvokeVoidAsync("adjustContextMenu"); } catch { }
         }
         else
         {
