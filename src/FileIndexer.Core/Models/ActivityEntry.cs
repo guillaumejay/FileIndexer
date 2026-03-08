@@ -8,6 +8,7 @@ public class ActivityEntry
     public DateTime StartedAtUtc { get; set; }
     public DateTime? CompletedAtUtc { get; set; }
     public string? ErrorMessage { get; set; }
+    public string? ResultMessage { get; set; }
 
     public TimeSpan? Duration => CompletedAtUtc.HasValue
         ? CompletedAtUtc.Value - StartedAtUtc

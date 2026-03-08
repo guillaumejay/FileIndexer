@@ -52,7 +52,7 @@ public class ActivityLogService
         return entry;
     }
 
-    public void CompleteActivity(Guid id)
+    public void CompleteActivity(Guid id, string? resultMessage = null)
     {
         lock (_lock)
         {
@@ -61,6 +61,7 @@ public class ActivityLogService
             {
                 entry.Status = ActivityStatus.Success;
                 entry.CompletedAtUtc = DateTime.UtcNow;
+                entry.ResultMessage = resultMessage;
             }
         }
 

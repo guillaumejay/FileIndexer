@@ -50,12 +50,17 @@ public class IndexDbContext : IDisposable
                 directory TEXT NOT NULL,
                 extension TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
+                is_directory INTEGER NOT NULL DEFAULT 0,
                 created_at_utc TEXT NOT NULL,
                 modified_at_utc TEXT NOT NULL,
                 indexed_at_utc TEXT NOT NULL,
                 FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
             )
         """);
+
+        // Migrations for existing databases
+        try { _connection.Execute("ALTER TABLE files ADD COLUMN is_directory INTEGER NOT NULL DEFAULT 0"); } catch { }
+        try { _connection.Execute("ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '__MACOSX'"); } catch { }
 
         // Index pour les recherches courantes
         _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)");
@@ -107,9 +112,9 @@ public class IndexDbContext : IDisposable
     {
         const string sql = """
             INSERT INTO files
-            (collection_id, name, path, directory, extension, size_bytes, created_at_utc, modified_at_utc, indexed_at_utc)
+            (collection_id, name, path, directory, extension, size_bytes, is_directory, created_at_utc, modified_at_utc, indexed_at_utc)
             VALUES
-            (@CollectionId, @Name, @Path, @Directory, @Extension, @SizeBytes, @CreatedAtUtc, @ModifiedAtUtc, @IndexedAtUtc)
+            (@CollectionId, @Name, @Path, @Directory, @Extension, @SizeBytes, @IsDirectory, @CreatedAtUtc, @ModifiedAtUtc, @IndexedAtUtc)
         """;
 
         var count = 0;
@@ -125,6 +130,7 @@ public class IndexDbContext : IDisposable
                 file.Directory,
                 file.Extension,
                 file.SizeBytes,
+                IsDirectory = file.IsDirectory ? 1 : 0,
                 CreatedAtUtc = file.CreatedAtUtc.ToString("O"),
                 ModifiedAtUtc = file.ModifiedAtUtc.ToString("O"),
                 IndexedAtUtc = file.IndexedAtUtc.ToString("O")
@@ -167,7 +173,8 @@ public class IndexDbContext : IDisposable
         int offset = 0,
         IEnumerable<int>? collectionIds = null,
         IEnumerable<string>? extensionFilter = null,
-        string? directoryFilter = null)
+        string? directoryFilter = null,
+        bool? showDirectories = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var isSearch = !string.IsNullOrWhiteSpace(query);
@@ -203,6 +210,14 @@ public class IndexDbContext : IDisposable
         // Build directory filter clause
         var directoryClause = directoryFilter != null ? "f.directory = @DirectoryPath" : "1=1";
 
+        // Build is_directory filter clause
+        var isDirClause = showDirectories switch
+        {
+            true => "f.is_directory = 1",
+            false => "f.is_directory = 0",
+            null => "1=1"
+        };
+
         var parameters = new DynamicParameters();
         parameters.Add("Limit", limit);
         parameters.Add("Offset", offset);
@@ -218,8 +233,35 @@ public class IndexDbContext : IDisposable
 
         if (isSearch)
         {
-            var ftsQuery = string.Join(" ", query.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                .Select(term => $"{term}*"));
+            // Build FTS5 query from user input.
+            // The unicode61 tokenizer strips punctuation and splits on non-alphanumeric chars,
+            // so "D&D" is indexed as two adjacent tokens "d" and "d".
+            // We must replicate this splitting to build a valid FTS5 query:
+            // - Simple words like "animist" become prefix searches: animist*
+            // - Words with punctuation like "d&d" are split into sub-tokens ("d","d")
+            //   and combined with NEAR(..., 0) to require them adjacent, matching the original text.
+            var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var ftsTerms = new List<string>();
+            foreach (var term in terms)
+            {
+                var tokens = System.Text.RegularExpressions.Regex.Split(term, @"[^\p{L}\p{N}]+")
+                    .Where(t => t.Length > 0)
+                    .ToList();
+
+                if (tokens.Count > 1)
+                {
+                    // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
+                    // e.g. "d&d" -> NEAR("d" "d", 0), "c++" -> NEAR("c", 0)
+                    ftsTerms.Add($"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)");
+                }
+                else if (tokens.Count == 1)
+                {
+                    // Single token: prefix search to match partial words
+                    // e.g. "anim" -> anim*  (matches "animist", "animation", etc.)
+                    ftsTerms.Add($"{tokens[0]}*");
+                }
+            }
+            var ftsQuery = string.Join(" ", ftsTerms);
             parameters.Add("Query", ftsQuery);
 
             string sql;
@@ -231,7 +273,7 @@ public class IndexDbContext : IDisposable
                 sql = $"""
                     SELECT f.* FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
                     GROUP BY f.path
                     ORDER BY {orderByColumn} {orderByDir}
                     LIMIT @Limit OFFSET @Offset
@@ -239,7 +281,7 @@ public class IndexDbContext : IDisposable
                 countSql = $"""
                     SELECT COUNT(DISTINCT f.path) FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
                     """;
             }
             else
@@ -247,14 +289,14 @@ public class IndexDbContext : IDisposable
                 sql = $"""
                     SELECT f.* FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
                     ORDER BY {orderByColumn} {orderByDir}
                     LIMIT @Limit OFFSET @Offset
                     """;
                 countSql = $"""
                     SELECT COUNT(*) FROM files f
                     INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause}
+                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
                     """;
             }
 
@@ -276,13 +318,13 @@ public class IndexDbContext : IDisposable
 
             if (needsDedup)
             {
-                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} GROUP BY f.path ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(DISTINCT f.path) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause}";
+                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause} GROUP BY f.path ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
+                countSql = $"SELECT COUNT(DISTINCT f.path) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}";
             }
             else
             {
-                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(*) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause}";
+                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
+                countSql = $"SELECT COUNT(*) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}";
             }
 
             var allFiles = await _connection.QueryAsync<IndexedFileDto>(sql, parameters);
@@ -491,29 +533,39 @@ public class IndexDbContext : IDisposable
         return collection;
     }
 
-    public async Task<Collection> CreateCollectionAsync(string name, string? description)
+    public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = "__MACOSX")
     {
         var now = DateTime.UtcNow.ToString("O");
         var id = await _connection.ExecuteScalarAsync<int>("""
-            INSERT INTO collections (name, description, created_at_utc)
-            VALUES (@Name, @Description, @CreatedAtUtc);
+            INSERT INTO collections (name, description, created_at_utc, excluded_directories)
+            VALUES (@Name, @Description, @CreatedAtUtc, @ExcludedDirectories);
             SELECT last_insert_rowid();
-            """, new { Name = name, Description = description, CreatedAtUtc = now });
+            """, new { Name = name, Description = description, CreatedAtUtc = now, ExcludedDirectories = excludedDirectories });
 
         return new Collection
         {
             Id = id,
             Name = name,
             Description = description,
+            ExcludedDirectories = excludedDirectories,
             CreatedAtUtc = DateTime.Parse(now)
         };
     }
 
-    public async Task UpdateCollectionAsync(int id, string name, string? description)
+    public async Task UpdateCollectionAsync(int id, string name, string? description, string? excludedDirectories = null)
     {
-        await _connection.ExecuteAsync(
-            "UPDATE collections SET name = @Name, description = @Description WHERE id = @Id",
-            new { Id = id, Name = name, Description = description });
+        if (excludedDirectories != null)
+        {
+            await _connection.ExecuteAsync(
+                "UPDATE collections SET name = @Name, description = @Description, excluded_directories = @ExcludedDirectories WHERE id = @Id",
+                new { Id = id, Name = name, Description = description, ExcludedDirectories = excludedDirectories });
+        }
+        else
+        {
+            await _connection.ExecuteAsync(
+                "UPDATE collections SET name = @Name, description = @Description WHERE id = @Id",
+                new { Id = id, Name = name, Description = description });
+        }
     }
 
     public async Task DeleteCollectionAsync(int id)
@@ -628,6 +680,7 @@ public class IndexDbContext : IDisposable
         Id = (int)dto.Id,
         Name = dto.Name,
         Description = dto.Description,
+        ExcludedDirectories = dto.Excluded_Directories ?? "__MACOSX",
         CreatedAtUtc = DateTime.Parse(dto.Created_At_Utc)
     };
 
@@ -637,6 +690,7 @@ public class IndexDbContext : IDisposable
         public string Name { get; set; } = "";
         public string? Description { get; set; }
         public string Created_At_Utc { get; set; } = "";
+        public string Excluded_Directories { get; set; } = "__MACOSX";
     }
 
     private class CollectionPathDto
@@ -656,6 +710,7 @@ public class IndexDbContext : IDisposable
         public string Directory { get; set; } = "";
         public string Extension { get; set; } = "";
         public long Size_Bytes { get; set; }
+        public int Is_Directory { get; set; }
         public string Created_At_Utc { get; set; } = "";
         public string Modified_At_Utc { get; set; } = "";
         public string Indexed_At_Utc { get; set; } = "";
@@ -670,6 +725,7 @@ public class IndexDbContext : IDisposable
         Directory = dto.Directory,
         Extension = dto.Extension,
         SizeBytes = dto.Size_Bytes,
+        IsDirectory = dto.Is_Directory != 0,
         CreatedAtUtc = DateTime.Parse(dto.Created_At_Utc),
         ModifiedAtUtc = DateTime.Parse(dto.Modified_At_Utc),
         IndexedAtUtc = DateTime.Parse(dto.Indexed_At_Utc)

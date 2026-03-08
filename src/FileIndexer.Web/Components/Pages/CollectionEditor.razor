@@ -57,6 +57,12 @@
                 }
             </div>
 
+            <div class="form-group">
+                <label>Excluded directories (one per line)</label>
+                <textarea @bind="excludedDirectories" rows="3" placeholder="__MACOSX&#10;.Trash-1000&#10;node_modules"></textarea>
+                <span class="field-hint">Directories matching these names will be skipped during indexing.</span>
+            </div>
+
             <div class="modal-actions">
                 <button class="btn-secondary" @onclick="OnCancel">Cancel</button>
                 <button class="btn-primary" @onclick="Save" disabled="@string.IsNullOrWhiteSpace(name)">
@@ -81,6 +87,7 @@
     private bool isNew => Collection == null;
     private string name = "";
     private string? description;
+    private string excludedDirectories = "__MACOSX";
     private List<CollectionPath> paths = new();
     private List<int> removedPathIds = new();
     private string newPath = "";
@@ -95,12 +102,14 @@
         {
             name = Collection.Name;
             description = Collection.Description;
+            excludedDirectories = Collection.ExcludedDirectories;
             paths = Collection.Paths.ToList();
         }
         else
         {
             name = "";
             description = null;
+            excludedDirectories = "__MACOSX";
             paths = new();
         }
         removedPathIds = new();
@@ -190,7 +199,7 @@
         {
             if (isNew)
             {
-                var created = await CollectionService.CreateAsync(name.Trim(), description?.Trim());
+                var created = await CollectionService.CreateAsync(name.Trim(), description?.Trim(), excludedDirectories.Trim());
                 foreach (var path in paths)
                 {
                     await CollectionService.AddPathAsync(created.Id, path.Path);
@@ -198,7 +207,7 @@
             }
             else
             {
-                await CollectionService.UpdateAsync(Collection!.Id, name.Trim(), description?.Trim());
+                await CollectionService.UpdateAsync(Collection!.Id, name.Trim(), description?.Trim(), excludedDirectories.Trim());
 
                 // Remove deleted paths
                 foreach (var pathId in removedPathIds)

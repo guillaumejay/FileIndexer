@@ -339,20 +339,23 @@
         isScanning = true;
         scanningCollectionId = collection.Id;
         progress = new ScanProgress { IsRunning = true };
+        var activity = ActivityLog.StartActivity($"Indexing \"{collection.Name}\"");
 
         try
         {
             var paths = collection.Paths.Select(p => p.Path);
-            await Scanner.ScanCollectionAsync(collection.Id, paths);
+            var result = await Scanner.ScanCollectionAsync(collection.Id, paths, excludedDirectories: collection.GetExcludedDirectoryList());
+            ActivityLog.CompleteActivity(activity.Id, $"{result.FilesScanned:N0} files indexed in {result.Elapsed.TotalSeconds:F1}s");
             await LoadCollections();
             await OnCollectionsChanged.InvokeAsync();
         }
         catch (OperationCanceledException)
         {
-            // Cancelled
+            ActivityLog.FailActivity(activity.Id, "Cancelled");
         }
         catch (Exception ex)
         {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
             Console.Error.WriteLine(ex);
         }
         finally
@@ -373,6 +376,9 @@
         pendingReindexIds = new HashSet<int>(indexable.Select(c => c.Id));
         StateHasChanged();
 
+        var activity = ActivityLog.StartActivity($"Reindexing all ({indexable.Count} collections)");
+        var totalFiles = 0;
+
         try
         {
             foreach (var collection in indexable)
@@ -383,18 +389,21 @@
                 StateHasChanged();
 
                 var paths = collection.Paths.Select(p => p.Path);
-                await Scanner.ScanCollectionAsync(collection.Id, paths);
+                var result = await Scanner.ScanCollectionAsync(collection.Id, paths, excludedDirectories: collection.GetExcludedDirectoryList());
+                totalFiles += result.FilesScanned;
             }
 
+            ActivityLog.CompleteActivity(activity.Id, $"{totalFiles:N0} files indexed across {indexable.Count} collections");
             await LoadCollections();
             await OnCollectionsChanged.InvokeAsync();
         }
         catch (OperationCanceledException)
         {
-            // Cancelled
+            ActivityLog.FailActivity(activity.Id, "Cancelled");
         }
         catch (Exception ex)
         {
+            ActivityLog.FailActivity(activity.Id, ex.Message);
             Console.Error.WriteLine(ex);
         }
         finally

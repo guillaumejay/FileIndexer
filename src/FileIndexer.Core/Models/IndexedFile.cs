@@ -25,6 +25,7 @@ public class IndexedFile
     public required string Directory { get; set; }
     public required string Extension { get; set; }
     public long SizeBytes { get; set; }
+    public bool IsDirectory { get; set; }
     public DateTime CreatedAtUtc { get; set; }
     public DateTime ModifiedAtUtc { get; set; }
     public DateTime IndexedAtUtc { get; set; }

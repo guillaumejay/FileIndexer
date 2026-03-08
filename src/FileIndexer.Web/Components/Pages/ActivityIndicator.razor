@@ -54,6 +54,10 @@
                             {
                                 <span class="activity-duration">@FormatDuration(entry.Duration.Value)</span>
                             }
+                            @if (!string.IsNullOrEmpty(entry.ResultMessage))
+                            {
+                                <span class="activity-result">@entry.ResultMessage</span>
+                            }
                             @if (!string.IsNullOrEmpty(entry.ErrorMessage))
                             {
                                 <span class="activity-error">@entry.ErrorMessage</span>

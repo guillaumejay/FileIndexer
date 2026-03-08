@@ -28,7 +28,7 @@ public class FileScannerService
 
     public ScanProgress CurrentProgress => _progress;
 
-    public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false)
+    public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false, IEnumerable<string>? excludedDirectories = null)
     {
         if (_progress.IsRunning)
         {
@@ -57,13 +57,17 @@ public class FileScannerService
                 await _db.ClearCollectionAsync(collectionId);
             }
 
+            var excludedDirSet = new HashSet<string>(
+                excludedDirectories ?? Enumerable.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase);
+
             // Phase 1: Enumerate all directories from all root paths
             var allDirectories = new List<string>();
             foreach (var rootPath in pathList)
             {
                 if (Directory.Exists(rootPath))
                 {
-                    var dirs = await EnumerateDirectoriesAsync(rootPath, ct);
+                    var dirs = await EnumerateDirectoriesAsync(rootPath, ct, excludedDirSet);
                     allDirectories.AddRange(dirs);
                 }
                 else
@@ -123,12 +127,12 @@ public class FileScannerService
         _cts?.Cancel();
     }
 
-    private async Task<List<string>> EnumerateDirectoriesAsync(string rootPath, CancellationToken ct)
+    private async Task<List<string>> EnumerateDirectoriesAsync(string rootPath, CancellationToken ct, HashSet<string>? excludedDirNames = null)
     {
         return await Task.Run(() =>
         {
             var dirs = new List<string> { rootPath };
-            
+
             try
             {
                 var enumerated = Directory.EnumerateDirectories(rootPath, "*", new EnumerationOptions
@@ -141,6 +145,9 @@ public class FileScannerService
                 foreach (var dir in enumerated)
                 {
                     ct.ThrowIfCancellationRequested();
+                    var dirName = Path.GetFileName(dir);
+                    if (excludedDirNames != null && excludedDirNames.Count > 0 && excludedDirNames.Contains(dirName))
+                        continue;
                     dirs.Add(dir);
                 }
             }
@@ -174,6 +181,31 @@ public class FileScannerService
             await Parallel.ForEachAsync(directories, options, async (directory, token) =>
             {
                 _progress.CurrentDirectory = directory;
+
+                // Index the directory itself as an entry
+                try
+                {
+                    var dirInfo = new DirectoryInfo(directory);
+                    var dirEntry = new IndexedFile
+                    {
+                        CollectionId = collectionId,
+                        Name = dirInfo.Name,
+                        Path = dirInfo.FullName,
+                        Directory = dirInfo.Parent?.FullName ?? "",
+                        Extension = "",
+                        SizeBytes = 0,
+                        IsDirectory = true,
+                        CreatedAtUtc = dirInfo.CreationTimeUtc,
+                        ModifiedAtUtc = dirInfo.LastWriteTimeUtc,
+                        IndexedAtUtc = DateTime.UtcNow
+                    };
+                    await writer.WriteAsync(dirEntry, token);
+                    Interlocked.Increment(ref filesScanned);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning("Error indexing directory {Dir}: {Error}", directory, ex.Message);
+                }
 
                 IEnumerable<string> files;
                 try
@@ -209,6 +241,7 @@ public class FileScannerService
                             Directory = fileInfo.DirectoryName ?? "",
                             Extension = fileInfo.Extension.ToLowerInvariant(),
                             SizeBytes = fileInfo.Length,
+                            IsDirectory = false,
                             CreatedAtUtc = fileInfo.CreationTimeUtc,
                             ModifiedAtUtc = fileInfo.LastWriteTimeUtc,
                             IndexedAtUtc = DateTime.UtcNow

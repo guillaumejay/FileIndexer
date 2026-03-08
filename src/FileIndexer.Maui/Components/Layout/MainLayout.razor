@@ -18,7 +18,18 @@
     }
     else
     {
-        @Body
+        <ErrorBoundary @ref="errorBoundary">
+            <ChildContent>
+                @Body
+            </ChildContent>
+            <ErrorContent Context="ex">
+                <div class="setup-screen" style="color: var(--danger);">
+                    <h2>Error</h2>
+                    <pre style="white-space: pre-wrap; font-size: 0.8rem; max-width: 90vw; overflow: auto;">@ex.ToString()</pre>
+                    <button class="btn-primary" style="margin-top: 1rem;" @onclick="ResetError">Retry</button>
+                </div>
+            </ErrorContent>
+        </ErrorBoundary>
     }
 </div>
 
@@ -28,8 +39,14 @@
 }
 
 @code {
+    private ErrorBoundary? errorBoundary;
     private bool showToast;
     private string toastMessage = "";
+
+    private void ResetError()
+    {
+        errorBoundary?.Recover();
+    }
 
     private async Task SelectDatabase()
     {

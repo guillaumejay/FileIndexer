@@ -22,14 +22,14 @@ public class CollectionService
         return await _db.GetCollectionByIdAsync(id);
     }
 
-    public async Task<Collection> CreateAsync(string name, string? description = null)
+    public async Task<Collection> CreateAsync(string name, string? description = null, string excludedDirectories = "__MACOSX")
     {
-        return await _db.CreateCollectionAsync(name, description);
+        return await _db.CreateCollectionAsync(name, description, excludedDirectories);
     }
 
-    public async Task UpdateAsync(int id, string name, string? description)
+    public async Task UpdateAsync(int id, string name, string? description, string? excludedDirectories = null)
     {
-        await _db.UpdateCollectionAsync(id, name, description);
+        await _db.UpdateCollectionAsync(id, name, description, excludedDirectories);
     }
 
     public async Task DeleteAsync(int id)

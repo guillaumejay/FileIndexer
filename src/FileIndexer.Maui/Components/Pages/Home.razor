@@ -54,6 +54,12 @@
                        @onchange="() => SetTypeFilter(FileTypeFilter.Archives)" />
                 Archives
             </label>
+            <span class="filter-separator">|</span>
+            <label class="filter-chip @(showFolders ? "selected" : "")">
+                <input type="checkbox" checked="@showFolders"
+                       @onchange="ToggleShowFolders" />
+                Dossiers
+            </label>
             @if (availableCollections.Count > 1)
             {
                 <span class="filter-separator">|</span>
@@ -104,7 +110,7 @@
                                 @oncontextmenu="e => OnRowContextMenu(e, file)"
                                 @oncontextmenu:preventDefault
                                 @ondblclick="() => OnRowDoubleClick(file)">
-                                <td class="file-name">@file.Name</td>
+                                <td class="file-name">@(file.IsDirectory ? "📁 " : "")@file.Name</td>
                                 <td class="file-dir" title="@file.Directory">@file.Directory</td>
                                 <td class="file-ext">@file.Extension</td>
                                 <td class="file-size">@file.SizeFormatted</td>
@@ -254,6 +260,7 @@
     private HashSet<int> selectedCollectionIds = new();
     private int totalCount;
     private FileTypeFilter fileTypeFilter = FileTypeFilter.All;
+    private bool showFolders = true;
 
     private Virtualize<IndexedFile>? virtualizeRef;
 
@@ -286,7 +293,7 @@
     {
         debounceTimer = new System.Timers.Timer(300);
         debounceTimer.AutoReset = false;
-        debounceTimer.Elapsed += async (s, e) => await InvokeAsync(RefreshList);
+        debounceTimer.Elapsed += (s, e) => RefreshListSafe();
 
         isLightTheme = Preferences.Default.Get("theme", "dark") == "light";
 
@@ -296,6 +303,8 @@
 
     private bool _themeApplied;
 
+    private bool _contextMenuNeedsAdjust;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender && !_themeApplied)
@@ -303,6 +312,11 @@
             _themeApplied = true;
             await ApplyTheme();
             try { await JS.InvokeVoidAsync("initColumnResize", ".file-list-table"); } catch { }
+        }
+        if (_contextMenuNeedsAdjust)
+        {
+            _contextMenuNeedsAdjust = false;
+            try { await JS.InvokeVoidAsync("adjustContextMenu"); } catch { }
         }
     }
 
@@ -363,7 +377,8 @@
                 request.StartIndex,
                 collectionIds,
                 GetExtensionFilter(),
-                directoryFilter);
+                directoryFilter,
+                GetShowDirectories());
 
             totalCount = result.TotalCount;
             currentFiles = result.Files;
@@ -423,7 +438,7 @@
             sortColumn = column;
             sortAsc = column is SortColumn.Size or SortColumn.ModifiedAt ? false : true;
         }
-        _ = RefreshList();
+        RefreshListSafe();
     }
 
     private void ToggleCollection(int id)
@@ -432,7 +447,7 @@
             selectedCollectionIds.Remove(id);
         else
             selectedCollectionIds.Add(id);
-        _ = RefreshList();
+        RefreshListSafe();
     }
 
     // Row interactions
@@ -467,7 +482,7 @@
         }
     }
 
-    private async Task OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
     {
         if (!selectedFileIds.Contains(file.Id))
         {
@@ -480,9 +495,7 @@
             contextMenuX = e.ClientX;
             contextMenuY = e.ClientY;
             contextMenuVisible = true;
-            StateHasChanged();
-            await Task.Yield();
-            try { await JS.InvokeVoidAsync("adjustContextMenu"); } catch { }
+            _contextMenuNeedsAdjust = true;
         }
         else
         {
@@ -782,16 +795,36 @@
         return fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null;
     }
 
+    private bool? GetShowDirectories()
+    {
+        return showFolders ? null : false;
+    }
+
+    private void ToggleShowFolders()
+    {
+        showFolders = !showFolders;
+        RefreshListSafe();
+    }
+
     private void SetTypeFilter(FileTypeFilter filter)
     {
         fileTypeFilter = filter;
-        _ = RefreshList();
+        RefreshListSafe();
     }
 
     private enum FileTypeFilter
     {
         All,
         Archives
+    }
+
+    private void RefreshListSafe()
+    {
+        _ = Task.Run(async () =>
+        {
+            try { await InvokeAsync(RefreshList); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"RefreshList error: {ex}"); }
+        });
     }
 
     public void Dispose()

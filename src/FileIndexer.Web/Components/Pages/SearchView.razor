@@ -26,6 +26,12 @@
                        @onchange="() => SetTypeFilter(FileTypeFilter.Archives)" />
                 Archives
             </label>
+            <span class="filter-separator">|</span>
+            <label class="filter-chip @(showFolders ? "selected" : "")">
+                <input type="checkbox" checked="@showFolders"
+                       @onchange="ToggleShowFolders" />
+                Dossiers
+            </label>
             @if (AvailableCollections.Count > 0)
             {
                 <span class="filter-separator">|</span>
@@ -110,7 +116,7 @@
                                 }
                                 else
                                 {
-                                    @file.Name
+                                    @(file.IsDirectory ? "📁 " : "")@file.Name
                                 }
                             </td>
                             <td class="file-dir" title="@file.Directory" @ondblclick="() => OnDirectoryDoubleClick(file)">
@@ -188,6 +194,7 @@
     private IndexStats? stats;
     private bool showCopyNotification = false;
     private FileTypeFilter fileTypeFilter = FileTypeFilter.All;
+    private bool showFolders = true;
 
     // Selection state
     private HashSet<long> selectedFileIds = new();
@@ -779,7 +786,8 @@
             request.StartIndex,
             GetSelectedCollectionIds(),
             GetExtensionFilter(),
-            directoryFilter);
+            directoryFilter,
+            GetShowDirectories());
 
         totalCount = result.TotalCount;
         currentFiles = result.Files;
@@ -851,6 +859,17 @@
     private IEnumerable<string>? GetExtensionFilter()
     {
         return fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null;
+    }
+
+    private bool? GetShowDirectories()
+    {
+        return showFolders ? null : false;
+    }
+
+    private void ToggleShowFolders()
+    {
+        showFolders = !showFolders;
+        _ = RefreshList();
     }
 
     private void SetTypeFilter(FileTypeFilter filter)
