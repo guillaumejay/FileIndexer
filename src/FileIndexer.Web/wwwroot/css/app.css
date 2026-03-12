@@ -671,13 +671,13 @@ button {
 /* Column resize handle */
 .col-resize-handle {
     position: absolute;
-    right: -3px;
+    right: 0;
     top: 0;
     bottom: 0;
-    width: 7px;
-    cursor: col-resize;
+    width: 8px;
+    cursor: col-resize !important;
     background: transparent;
-    z-index: 2;
+    z-index: 20;
 }
 
 .col-resize-handle:hover {

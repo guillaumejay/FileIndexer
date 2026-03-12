@@ -203,9 +203,21 @@ body {
     font-size: 0.7rem;
     letter-spacing: 0.05em;
     border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border);
     min-height: var(--touch-target);
     position: relative;
-    overflow: hidden;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.file-list-table th:last-child {
+    border-right: none;
+}
+
+.file-list-table th:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
 }
 
 .file-list-table th.sorted {
@@ -224,13 +236,13 @@ body {
 /* Column resize handle */
 .col-resize-handle {
     position: absolute;
-    right: -3px;
+    right: 0;
     top: 0;
     bottom: 0;
-    width: 7px;
-    cursor: col-resize;
+    width: 12px;
+    cursor: col-resize !important;
     background: transparent;
-    z-index: 2;
+    z-index: 20;
 }
 
 .col-resize-handle:hover {

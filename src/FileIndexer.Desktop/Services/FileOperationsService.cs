@@ -16,6 +16,11 @@ public class FileOperationsService
         _trashService = trashService;
     }
 
+    public async Task<IEnumerable<IndexedFile>> GetFilesByIdsAsync(IEnumerable<long> ids)
+    {
+        return await _db.GetFilesByIdsAsync(ids);
+    }
+
     public async Task<OperationResult> OpenFileAsync(string path)
     {
         if (!File.Exists(path))

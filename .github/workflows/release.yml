@@ -26,11 +26,11 @@ jobs:
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-    - name: Restore dependencies
-      run: dotnet restore
-
     - name: Install MAUI Workload
       run: dotnet workload install maui
+
+    - name: Restore dependencies
+      run: dotnet restore
 
     - name: Publish Web (Windows)
       run: |

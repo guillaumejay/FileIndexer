@@ -145,11 +145,11 @@
         {
             <div class="context-menu-item" @onclick="FilterByFolder">S&eacute;lectionner ce dossier</div>
             <div class="context-menu-item" @onclick="StartRename">Renommer</div>
-            @if (IsSelectedFileArchive())
-            {
-                <div class="context-menu-item" @onclick="StartExtract">D&eacute;sarchiver</div>
-                <div class="context-menu-item" @onclick="StartExtractAndDelete">D&eacute;sarchiver et effacer l'archive</div>
-            }
+        }
+        @if (IsSelectedFileArchive())
+        {
+            <div class="context-menu-item" @onclick="StartExtract">D&eacute;sarchiver</div>
+            <div class="context-menu-item" @onclick="StartExtractAndDelete">D&eacute;sarchiver et effacer l'archive</div>
         }
         <div class="context-menu-item" @onclick="StartCopy">Copier vers...</div>
         <div class="context-menu-item" @onclick="StartMove">D&eacute;placer vers...</div>
@@ -558,10 +558,13 @@
     // Extract operation
     private bool IsSelectedFileArchive()
     {
-        if (selectedFileIds.Count != 1) return false;
-        var fileId = selectedFileIds.First();
-        var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
-        return file != null && ArchiveService.IsArchive(file.Name);
+        if (selectedFileIds.Count == 0) return false;
+        // Check current visible files first as an optimization
+        if (currentFiles.Any(f => selectedFileIds.Contains(f.Id) && ArchiveService.IsArchive(f.Name)))
+            return true;
+        // In theory we should check the DB if some selected files are not in currentFiles,
+        // but for context menu display, checking visible files is usually enough.
+        return false;
     }
 
     private Task StartExtract() => DoExtract(deleteAfter: false);
@@ -571,33 +574,58 @@
     private async Task DoExtract(bool deleteAfter)
     {
         CloseContextMenu();
-        if (selectedFileIds.Count != 1) return;
+        if (selectedFileIds.Count == 0) return;
 
-        var fileId = selectedFileIds.First();
-        var file = currentFiles.FirstOrDefault(f => f.Id == fileId);
-        if (file == null) return;
+        var files = await FileOps.GetFilesByIdsAsync(selectedFileIds);
+        var archives = files.Where(f => ArchiveService.IsArchive(f.Name)).ToList();
+
+        if (archives.Count == 0) return;
 
         var label = deleteAfter ? "Extracting & deleting" : "Extracting";
-        var activity = ActivityLog.StartActivity($"{label} \"{file.Name}\"");
+        var count = archives.Count;
+        var activity = ActivityLog.StartActivity($"{label} {count} archive(s)");
 
         try
         {
-            var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
-            if (!result.IsSuccess)
+            var successCount = 0;
+            var errorCount = 0;
+            var deletedIds = new List<long>();
+
+            foreach (var file in archives)
             {
-                ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Unknown error");
-                ShowError(result.ErrorMessage ?? "Erreur lors de l'extraction");
+                var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
+                if (result.IsSuccess)
+                {
+                    successCount++;
+                    if (deleteAfter)
+                    {
+                        deletedIds.Add(file.Id);
+                    }
+                }
+                else
+                {
+                    errorCount++;
+                    // We don't stop for one error, but we'll report it
+                }
+            }
+
+            if (deletedIds.Any())
+            {
+                await FileOps.DeleteFilesAsync(deletedIds);
+                foreach (var id in deletedIds) selectedFileIds.Remove(id);
+            }
+
+            if (errorCount > 0)
+            {
+                ActivityLog.FailActivity(activity.Id, $"Extracted {successCount}, failed {errorCount}");
+                ShowError($"Extraction terminée avec {errorCount} erreurs.");
             }
             else
             {
-                if (deleteAfter)
-                {
-                    await FileOps.DeleteFilesAsync(new[] { fileId });
-                    selectedFileIds.Clear();
-                }
                 ActivityLog.CompleteActivity(activity.Id);
-                await RefreshList();
             }
+
+            await RefreshList();
         }
         catch (Exception ex)
         {
