@@ -26,8 +26,8 @@ jobs:
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-    - name: Install MAUI Workload
-      run: dotnet workload install maui
+    - name: Install MAUI Android Workload
+      run: dotnet workload install maui-android
 
     - name: Restore dependencies
       run: dotnet restore
