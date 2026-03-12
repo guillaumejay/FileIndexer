@@ -1,36 +1,64 @@
 # File Indexer
 
-High-performance file indexer for NAS drives with web interface.
+High-performance file indexer for NAS drives with multiple interfaces (Web, Desktop, Mobile).
 
 ## Features
 
-- **Parallel scanning**: Index 200k+ files in minutes
-- **Instant search**: FTS5 with < 50ms response time
-- **Cross-platform**: Windows, Linux, macOS
-- **Modern web interface**: Blazor Server with real-time progress
+- **Parallel scanning**: Index 200k+ files in minutes using `System.Threading.Channels`
+- **Instant search**: SQLite FTS5 with < 50ms response time
+- **Cross-platform**: Windows, Linux, macOS, Android, iOS
+- **Multiple Interfaces**: 
+  - **Web**: Blazor Server for remote access
+  - **Mobile/Desktop**: .NET MAUI Hybrid for native experience
+- **Collections**: Group indexed files into logical collections
 
 ## Prerequisites
 
-- .NET 10 SDK
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- MAUI Workload (for Mobile/Desktop): `dotnet workload install maui`
 
-## Installation
+## Getting Started
 
 ```bash
-# Clone/copy the project
+# Clone the project
+git clone https://github.com/guill/FileIndexer.git
 cd FileIndexer
 
-# Restore packages
+# Restore all dependencies
 dotnet restore
-
-# Run the application
-dotnet run
 ```
 
-The application will be available at http://localhost:5000
+## Running the Application
+
+### 🌐 Web Interface (Blazor Server)
+The web version is ideal for NAS devices where you want to access the indexer via a browser.
+
+```bash
+dotnet run --project src/FileIndexer.Web
+```
+*Accessible at http://localhost:5000*
+
+### 📱 Native Application (.NET MAUI)
+The MAUI version provides a native experience with platform-specific features like "Move to Trash".
+
+#### Windows
+```bash
+dotnet build -t:Run -f net10.0-windows10.0.19041.0 src/FileIndexer.Maui
+```
+
+#### macOS (Mac Catalyst)
+```bash
+dotnet build -t:Run -f net10.0-maccatalyst src/FileIndexer.Maui
+```
+
+#### Android
+```bash
+dotnet build -t:Run -f net10.0-android src/FileIndexer.Maui
+```
 
 ## Configuration
 
-Edit `appsettings.json`:
+Edit `appsettings.json` (Web) or use the in-app settings (MAUI):
 
 ```json
 {
@@ -52,45 +80,24 @@ Edit `appsettings.json`:
 | `ScanParallelism` | Number of parallel threads | 64 |
 | `ScanBatchSize` | Batch size for DB inserts | 500 |
 
-## Supported Paths
-
-### Windows
-```
-C:\Users\...
-\\server\share
-Z:\nas-mount
-```
-
-### Linux / macOS
-```
-/mnt/nas
-/media/share
-/Volumes/NAS
-```
-
-## Usage
-
-1. **Configure the path**: Enter the NAS path in the text field
-2. **Start the scan**: Click "Start scan"
-3. **Search**: Use the search bar (real-time search)
-
-### Search
-
-- Search by filename with prefix matching (e.g., `report` finds `report-2024.pdf`)
-- Click on an extension in the stats to filter
-- Click on a row to copy the path
-
 ## Architecture
+
+The project is divided into several layers to maximize code reuse:
+
+- **src/FileIndexer.Core**: Shared logic, SQLite FTS5 access, and data models.
+- **src/FileIndexer.Desktop**: Shared desktop-specific logic (Windows/macOS features).
+- **src/FileIndexer.Web**: Blazor Server web application.
+- **src/FileIndexer.Maui**: .NET MAUI Hybrid application sharing the same Blazor components for the UI.
 
 ```
 FileIndexer/
-├── Models/              # Data models
-├── Data/                # SQLite + FTS5 access
-├── Services/            # Scanner + Search
-├── Components/          # Blazor interface
-│   ├── Layout/
-│   └── Pages/
-└── wwwroot/css/         # Styles
+├── src/
+│   ├── FileIndexer.Core/      # Data Layer & Services
+│   ├── FileIndexer.Desktop/   # OS-specific services
+│   ├── FileIndexer.Web/       # Web Host
+│   └── FileIndexer.Maui/      # Native Host (Hybrid)
+├── openspec/                  # Specification-driven development artifacts
+└── agents.md                  # Specialized AI Agent roles
 ```
 
 ## Performance
@@ -101,23 +108,21 @@ FileIndexer/
 | 200k files | ~8 min | < 50ms |
 | 500k files | ~20 min | < 100ms |
 
-*Depends on NAS network latency
+*\*Depends on NAS network latency and IOPS.*
 
-## Publishing
+## Publishing (Web)
 
 ```bash
 # Windows
-dotnet publish -c Release -r win-x64 --self-contained -o ./publish/win
+dotnet publish src/FileIndexer.Web -c Release -r win-x64 --self-contained -o ./publish/win
 
 # Linux
-dotnet publish -c Release -r linux-x64 --self-contained -o ./publish/linux
-
-# macOS (Intel)
-dotnet publish -c Release -r osx-x64 --self-contained -o ./publish/osx
-
-# macOS (Apple Silicon)
-dotnet publish -c Release -r osx-arm64 --self-contained -o ./publish/osx-arm
+dotnet publish src/FileIndexer.Web -c Release -r linux-x64 --self-contained -o ./publish/linux
 ```
+
+## Specialized AI Agents
+
+Refer to [agents.md](./agents.md) for detailed roles and responsibilities when working on this project with AI assistants.
 
 ## License
 
