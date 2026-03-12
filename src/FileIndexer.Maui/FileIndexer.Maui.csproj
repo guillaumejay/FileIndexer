@@ -1,8 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
-    <TargetFrameworks>net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+    <!-- Base framework for all -->
+    <TargetFrameworks>net10.0-android</TargetFrameworks>
+    <!-- iOS and MacCatalyst are only built on macOS -->
+    <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('osx'))">$(TargetFrameworks);net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+    <!-- Windows only built on Windows -->
     <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+    
     <OutputType>Exe</OutputType>
     <RootNamespace>FileIndexer.Maui</RootNamespace>
     <UseMaui>true</UseMaui>
