@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 10.0.x
+
+    - name: Set version
+      id: versioning
+      run: |
+        VERSION=$(date +'%Y.%m.%d.%H%M')
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Install MAUI Workload
+      run: dotnet workload install maui
+
+    - name: Publish Web (Windows)
+      run: |
+        dotnet publish src/FileIndexer.Web -c Release -r win-x64 --self-contained -o ./publish/web-win
+        cd ./publish/web-win && zip -r ../../FileIndexer-Web-Windows.zip . && cd ../..
+
+    - name: Publish Web (Linux)
+      run: |
+        dotnet publish src/FileIndexer.Web -c Release -r linux-x64 --self-contained -o ./publish/web-linux
+        cd ./publish/web-linux && tar -czvf ../../FileIndexer-Web-Linux.tar.gz . && cd ../..
+
+    - name: Build MAUI (Android)
+      run: |
+        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-android --no-restore -o ./publish/maui-android
+        cp src/FileIndexer.Maui/bin/Release/net10.0-android/*-Signed.apk FileIndexer-Android.apk || cp src/FileIndexer.Maui/bin/Release/net10.0-android/*.apk FileIndexer-Android.apk
+
+    - name: Create Release
+      id: create_release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ env.VERSION }}
+        name: Release v${{ env.VERSION }}
+        draft: false
+        prerelease: false
+        files: |
+          FileIndexer-Web-Windows.zip
+          FileIndexer-Web-Linux.tar.gz
+          FileIndexer-Android.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

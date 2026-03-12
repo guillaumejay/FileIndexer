@@ -100,15 +100,13 @@ FileIndexer/
 └── agents.md                  # Specialized AI Agent roles
 ```
 
-## Performance
+## GitHub Releases
 
-| Volume | Scan time* | Search time |
-|--------|-----------|-------------|
-| 50k files | ~2 min | < 20ms |
-| 200k files | ~8 min | < 50ms |
-| 500k files | ~20 min | < 100ms |
+This project uses GitHub Actions for automated releases. Every push to the `main` branch triggers a new release with:
+- **Web**: Windows and Linux standalone packages.
+- **Android**: APK for mobile devices.
 
-*\*Depends on NAS network latency and IOPS.*
+Versions are tagged using the format `vYYYY.MM.DD.HHmm`.
 
 ## Publishing (Web)
 
