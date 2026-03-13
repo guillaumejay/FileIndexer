@@ -76,7 +76,7 @@ jobs:
       run: dotnet workload install maui
 
     - name: Restore dependencies
-      run: dotnet restore -r win-x64
+      run: dotnet restore
 
     - name: Build MAUI (Windows)
       run: |
