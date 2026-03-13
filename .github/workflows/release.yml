@@ -80,7 +80,7 @@ jobs:
 
     - name: Build MAUI (Windows)
       run: |
-        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-windows10.0.19041.0 -r win-x64 --self-contained -p:WindowsPackageType=None -o ./publish/maui-windows -p:TargetFrameworks=net10.0-windows10.0.19041.0
+        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-windows10.0.19041.0 -r win-x64 --self-contained -p:WindowsPackageType=None -o ./publish/maui-windows -p:OnlyWindows=true
         Compress-Archive -Path ./publish/maui-windows/* -DestinationPath FileIndexer-MAUI-Windows.zip
 
     - name: Upload Windows Artifacts
