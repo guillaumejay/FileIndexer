@@ -42,7 +42,7 @@ public class ArchiveService
         {
             return await Task.Run(() =>
             {
-                using var archive = ArchiveFactory.Open(archivePath);
+                using var archive = ArchiveFactory.OpenArchive(archivePath);
                 var entries = archive.Entries.Where(e => !e.IsDirectory).ToList();
 
                 if (entries.Count == 0)
