@@ -1,5 +1,6 @@
 @page "/"
 @inject CollectionService CollectionSvc
+@inject BuildInfoService BuildInfo
 @inject IJSRuntime JS
 @rendermode Microsoft.AspNetCore.Components.Web.RenderMode.InteractiveServer
 
@@ -20,6 +21,9 @@
                 <button class="btn-icon" @onclick="ToggleTheme" title="Toggle theme">
                     @(isLightTheme ? "🌙" : "☀️")
                 </button>
+                <button class="btn-icon" @onclick="() => showSettings = true" title="Settings">
+                    ⚙️
+                </button>
             </div>
         </div>
     </header>
@@ -36,9 +40,34 @@
     </div>
 </div>
 
+@if (showSettings)
+{
+    <div class="modal-overlay" @onclick="() => showSettings = false">
+        <div class="modal-content modal-small" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button class="modal-close" @onclick="() => showSettings = false">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="settings-group">
+                    <label style="font-weight: 600; display: block; margin-bottom: 0.5rem; color: var(--text-primary);">Application</label>
+                    <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.6;">
+                        <div>Version: <strong>@BuildInfo.Version</strong></div>
+                        <div>Build date: <strong>@BuildInfo.BuildDate.ToLocalTime().ToString("g")</strong></div>
+                    </div>
+                </div>
+                <div class="modal-actions" style="margin-top: 1.5rem;">
+                    <button class="btn-primary" @onclick="() => showSettings = false">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private string activeTab = "search";
     private bool isLightTheme = false;
+    private bool showSettings = false;
     private List<Collection> collections = new();
 
     private SearchView? searchViewRef;

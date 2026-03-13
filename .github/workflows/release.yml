@@ -36,17 +36,17 @@ jobs:
 
     - name: Publish Web (Windows)
       run: |
-        dotnet publish src/FileIndexer.Web -c Release -r win-x64 --self-contained -o ./publish/web-win
+        dotnet publish src/FileIndexer.Web -c Release -r win-x64 --self-contained -o ./publish/web-win -p:Version=${{ needs.build-linux-android.outputs.version }}
         cd ./publish/web-win && zip -r ../../FileIndexer-Web-Windows.zip . && cd ../..
 
     - name: Publish Web (Linux)
       run: |
-        dotnet publish src/FileIndexer.Web -c Release -r linux-x64 --self-contained -o ./publish/web-linux
+        dotnet publish src/FileIndexer.Web -c Release -r linux-x64 --self-contained -o ./publish/web-linux -p:Version=${{ needs.build-linux-android.outputs.version }}
         cd ./publish/web-linux && tar -czvf ../../FileIndexer-Web-Linux.tar.gz . && cd ../..
 
     - name: Build MAUI (Android)
       run: |
-        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-android --no-restore -o ./publish/maui-android
+        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-android --no-restore -o ./publish/maui-android -p:Version=${{ needs.build-linux-android.outputs.version }}
         cp src/FileIndexer.Maui/bin/Release/net10.0-android/*-Signed.apk FileIndexer-Android.apk || cp src/FileIndexer.Maui/bin/Release/net10.0-android/*.apk FileIndexer-Android.apk
 
     - name: Upload Linux/Android Artifacts
@@ -80,7 +80,7 @@ jobs:
 
     - name: Build MAUI (Windows)
       run: |
-        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-windows10.0.19041.0 -r win-x64 --self-contained -p:WindowsPackageType=None -o ./publish/maui-windows -p:OnlyWindows=true
+        dotnet publish src/FileIndexer.Maui -c Release -f net10.0-windows10.0.19041.0 -r win-x64 --self-contained -p:WindowsPackageType=None -o ./publish/maui-windows -p:OnlyWindows=true -p:Version=${{ needs.build-linux-android.outputs.version }}
         Compress-Archive -Path ./publish/maui-windows/* -DestinationPath FileIndexer-MAUI-Windows.zip
 
     - name: Upload Windows Artifacts

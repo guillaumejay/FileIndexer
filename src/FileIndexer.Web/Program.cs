@@ -19,6 +19,7 @@ builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddScoped<SearchService>();
 builder.Services.AddScoped<CollectionService>();
 builder.Services.AddScoped<ConfigExportService>();
+builder.Services.AddSingleton<BuildInfoService>();
 
 // Platform-specific services
 // Use FallbackFolderPicker on all platforms (custom UI in browser)

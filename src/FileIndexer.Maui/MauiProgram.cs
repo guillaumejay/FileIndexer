@@ -44,6 +44,7 @@ public static class MauiProgram
         builder.Services.AddScoped<SearchService>();
         builder.Services.AddScoped<CollectionService>();
         builder.Services.AddScoped<ConfigExportService>();
+        builder.Services.AddSingleton<BuildInfoService>();
 
 #if DESKTOP
         // Desktop-only services (Windows/macOS)

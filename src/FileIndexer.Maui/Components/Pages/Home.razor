@@ -2,6 +2,7 @@
 @using FileIndexer.Models
 @inject SearchService Search
 @inject CollectionService Collections
+@inject BuildInfoService BuildInfo
 @inject DatabasePathService DbPathService
 @inject IMauiFolderPickerService FolderPicker
 @inject IJSRuntime JS
@@ -205,6 +206,13 @@
                         Create New
                     </button>
                 }
+            </div>
+            <div class="settings-section">
+                <h3>Application</h3>
+                <div style="font-size: 0.875rem; color: var(--text-secondary); line-height: 1.4;">
+                    <div>Version: <strong>@BuildInfo.Version</strong></div>
+                    <div>Build date: <strong>@BuildInfo.BuildDate.ToLocalTime().ToString("g")</strong></div>
+                </div>
             </div>
         </div>
     </div>
