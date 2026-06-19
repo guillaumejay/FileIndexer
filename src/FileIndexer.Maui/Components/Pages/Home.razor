@@ -490,7 +490,7 @@
         }
     }
 
-    private void OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    private async Task OnRowContextMenu(MouseEventArgs e, IndexedFile file)
     {
         if (!selectedFileIds.Contains(file.Id))
         {
@@ -507,18 +507,18 @@
         }
         else
         {
-            CopyPathToClipboard(file.Path);
+            await CopyPathToClipboard(file.Path);
         }
     }
 
-    private async void OnRowDoubleClick(IndexedFile file)
+    private async Task OnRowDoubleClick(IndexedFile file)
     {
 #if DESKTOP
         var result = await FileOps.OpenFileAsync(file.Path);
         if (!result.IsSuccess)
             ShowError(result.ErrorMessage ?? "Failed to open file");
 #else
-        CopyPathToClipboard(file.Path);
+        await CopyPathToClipboard(file.Path);
 #endif
     }
 
@@ -535,7 +535,7 @@
         return currentFiles.Any(f => selectedFileIds.Contains(f.Id) && ArchiveService.IsArchive(f.Name));
     }
 
-    private async void OpenSelectedFile()
+    private async Task OpenSelectedFile()
     {
         CloseContextMenu();
         var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
@@ -547,7 +547,7 @@
         }
     }
 
-    private async void OpenSelectedFolder()
+    private async Task OpenSelectedFolder()
     {
         CloseContextMenu();
         var file = currentFiles.FirstOrDefault(f => selectedFileIds.Contains(f.Id));
@@ -565,11 +565,11 @@
         ShowToast("Rename not yet implemented in MAUI");
     }
 
-    private void StartExtract() => DoExtract(deleteAfter: false);
+    private Task StartExtract() => DoExtract(deleteAfter: false);
 
-    private void StartExtractAndDelete() => DoExtract(deleteAfter: true);
+    private Task StartExtractAndDelete() => DoExtract(deleteAfter: true);
 
-    private async void DoExtract(bool deleteAfter)
+    private async Task DoExtract(bool deleteAfter)
     {
         CloseContextMenu();
         if (selectedFileIds.Count == 0) return;
@@ -631,7 +631,7 @@
         await InvokeAsync(StateHasChanged);
     }
 
-    private async void StartCopy()
+    private async Task StartCopy()
     {
         CloseContextMenu();
         var destFolder = await FolderPicker.PickFolderAsync();
@@ -659,7 +659,7 @@
         }
     }
 
-    private async void StartMove()
+    private async Task StartMove()
     {
         CloseContextMenu();
         var destFolder = await FolderPicker.PickFolderAsync();
@@ -688,7 +688,7 @@
         }
     }
 
-    private async void DeleteSelected()
+    private async Task DeleteSelected()
     {
         CloseContextMenu();
         var count = selectedFileIds.Count;
@@ -715,7 +715,7 @@
     }
 #endif
 
-    private async void CopySelectedPaths()
+    private async Task CopySelectedPaths()
     {
         CloseContextMenu();
         var paths = currentFiles
@@ -726,7 +726,7 @@
         ShowToast("Path copied");
     }
 
-    private async void CopyPathToClipboard(string path)
+    private async Task CopyPathToClipboard(string path)
     {
         await CopyToClipboard(path);
         ShowToast("Path copied");
@@ -770,7 +770,7 @@
         showSettings = false;
     }
 
-    private async void ChangeDatabase()
+    private async Task ChangeDatabase()
     {
         var path = await FolderPicker.PickDatabaseFileAsync();
         if (path != null)
@@ -782,7 +782,7 @@
         }
     }
 
-    private async void CreateNewDatabase()
+    private async Task CreateNewDatabase()
     {
 #if DESKTOP
         var folder = await FolderPicker.PickFolderAsync();
