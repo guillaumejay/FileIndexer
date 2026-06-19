@@ -6,21 +6,55 @@ namespace FileIndexer.Data;
 
 public class IndexDbContext : IDisposable
 {
-    private readonly SqliteConnection _connection;
-    private readonly string _dbPath;
+    private readonly string _connectionString;
+
+    // For in-memory databases, a single keep-alive connection must stay open for the
+    // lifetime of the context, otherwise the shared-cache in-memory DB is destroyed as
+    // soon as the last connection closes. Null for file-based databases.
+    private readonly SqliteConnection? _keepAlive;
 
     public IndexDbContext(string dbPath = "fileindex.db")
     {
-        _dbPath = dbPath;
-        _connection = new SqliteConnection($"Data Source={_dbPath}");
-        _connection.Open();
+        var inMemory = string.IsNullOrWhiteSpace(dbPath) || dbPath == ":memory:";
+        if (inMemory)
+        {
+            // Shared-cache in-memory DB so every pooled connection sees the same data.
+            // A unique name keeps independent contexts (e.g. tests) isolated from each other.
+            var name = "fileindexer_" + Guid.NewGuid().ToString("N");
+            _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared";
+            _keepAlive = CreateConnection();
+        }
+        else
+        {
+            _connectionString = $"Data Source={dbPath}";
+        }
+
         InitializeDatabase();
+    }
+
+    // Opens a fresh pooled connection. Each database operation uses its own connection so
+    // the context is safe to use concurrently (e.g. parallel scanner reads + writer inserts).
+    private SqliteConnection CreateConnection()
+    {
+        var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        // Wait instead of failing immediately when the DB is briefly locked by another connection.
+        connection.Execute("PRAGMA busy_timeout=5000;");
+        return connection;
     }
 
     private void InitializeDatabase()
     {
+        using var connection = CreateConnection();
+
+        // WAL allows concurrent readers alongside a single writer (no-op for in-memory DBs).
+        if (_keepAlive == null)
+        {
+            connection.Execute("PRAGMA journal_mode=WAL;");
+        }
+
         // Collections table
-        _connection.Execute("""
+        connection.Execute("""
             CREATE TABLE IF NOT EXISTS collections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
@@ -30,7 +64,7 @@ public class IndexDbContext : IDisposable
         """);
 
         // Collection paths table
-        _connection.Execute("""
+        connection.Execute("""
             CREATE TABLE IF NOT EXISTS collection_paths (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 collection_id INTEGER NOT NULL,
@@ -38,10 +72,10 @@ public class IndexDbContext : IDisposable
                 FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE
             )
         """);
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_collection_paths_collection ON collection_paths(collection_id)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_collection_paths_collection ON collection_paths(collection_id)");
 
         // Files table (path NOT unique - files can exist in multiple collections)
-        _connection.Execute("""
+        connection.Execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 collection_id INTEGER NOT NULL,
@@ -58,24 +92,27 @@ public class IndexDbContext : IDisposable
             )
         """);
 
-        // Migrations for existing databases
-        try { _connection.Execute("ALTER TABLE files ADD COLUMN is_directory INTEGER NOT NULL DEFAULT 0"); } catch { }
-        try { _connection.Execute("ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '__MACOSX'"); } catch { }
+        // Migrations for existing databases. Check first so no exception is thrown on an
+        // already-upgraded schema (a caught exception still trips the debugger every startup).
+        if (!ColumnExists(connection, "files", "is_directory"))
+            connection.Execute("ALTER TABLE files ADD COLUMN is_directory INTEGER NOT NULL DEFAULT 0");
+        if (!ColumnExists(connection, "collections", "excluded_directories"))
+            connection.Execute("ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '__MACOSX'");
 
-        // Index pour les recherches courantes
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)");
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_directory ON files(directory)");
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at_utc)");
+        // Indexes for common searches
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_directory ON files(directory)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at_utc)");
 
-        // Index pour le tri par colonnes
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)");
-        _connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes)");
+        // Indexes for column sorting
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes)");
 
-        // Table FTS5 pour recherche full-text ultra-rapide
-        _connection.Execute("""
+        // FTS5 virtual table for ultra-fast full-text search
+        connection.Execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-                name, 
-                path, 
+                name,
+                path,
                 directory,
                 content='files',
                 content_rowid='id',
@@ -83,29 +120,36 @@ public class IndexDbContext : IDisposable
             )
         """);
 
-        // Triggers pour garder FTS synchronisé
-        _connection.Execute("""
+        // Triggers to keep FTS in sync with the files table
+        connection.Execute("""
             CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
-                INSERT INTO files_fts(rowid, name, path, directory) 
+                INSERT INTO files_fts(rowid, name, path, directory)
                 VALUES (new.id, new.name, new.path, new.directory);
             END
         """);
 
-        _connection.Execute("""
+        connection.Execute("""
             CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, name, path, directory) 
+                INSERT INTO files_fts(files_fts, rowid, name, path, directory)
                 VALUES ('delete', old.id, old.name, old.path, old.directory);
             END
         """);
 
-        _connection.Execute("""
+        connection.Execute("""
             CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
-                INSERT INTO files_fts(files_fts, rowid, name, path, directory) 
+                INSERT INTO files_fts(files_fts, rowid, name, path, directory)
                 VALUES ('delete', old.id, old.name, old.path, old.directory);
-                INSERT INTO files_fts(rowid, name, path, directory) 
+                INSERT INTO files_fts(rowid, name, path, directory)
                 VALUES (new.id, new.name, new.path, new.directory);
             END
         """);
+    }
+
+    private static bool ColumnExists(SqliteConnection connection, string table, string column)
+    {
+        var columns = connection.Query<string>(
+            "SELECT name FROM pragma_table_info(@Table)", new { Table = table });
+        return columns.Any(c => string.Equals(c, column, StringComparison.OrdinalIgnoreCase));
     }
 
     public async Task<int> InsertFilesAsync(IEnumerable<IndexedFile> files)
@@ -118,11 +162,12 @@ public class IndexDbContext : IDisposable
         """;
 
         var count = 0;
-        using var transaction = _connection.BeginTransaction();
+        using var connection = CreateConnection();
+        using var transaction = connection.BeginTransaction();
 
         foreach (var file in files)
         {
-            await _connection.ExecuteAsync(sql, new
+            await connection.ExecuteAsync(sql, new
             {
                 file.CollectionId,
                 file.Name,
@@ -231,37 +276,25 @@ public class IndexDbContext : IDisposable
             parameters.Add("DirectoryPath", directoryFilter);
         }
 
+        using var connection = CreateConnection();
+
         if (isSearch)
         {
-            // Build FTS5 query from user input.
-            // The unicode61 tokenizer strips punctuation and splits on non-alphanumeric chars,
-            // so "D&D" is indexed as two adjacent tokens "d" and "d".
-            // We must replicate this splitting to build a valid FTS5 query:
-            // - Simple words like "animist" become prefix searches: animist*
-            // - Words with punctuation like "d&d" are split into sub-tokens ("d","d")
-            //   and combined with NEAR(..., 0) to require them adjacent, matching the original text.
-            var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            var ftsTerms = new List<string>();
-            foreach (var term in terms)
-            {
-                var tokens = System.Text.RegularExpressions.Regex.Split(term, @"[^\p{L}\p{N}]+")
-                    .Where(t => t.Length > 0)
-                    .ToList();
+            var ftsQuery = BuildFtsQuery(query);
 
-                if (tokens.Count > 1)
+            // A query made only of punctuation (e.g. "+++") produces no tokens; an empty FTS5
+            // MATCH expression throws a syntax error, so short-circuit to an empty result.
+            if (string.IsNullOrWhiteSpace(ftsQuery))
+            {
+                sw.Stop();
+                return new SearchResult
                 {
-                    // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
-                    // e.g. "d&d" -> NEAR("d" "d", 0), "c++" -> NEAR("c", 0)
-                    ftsTerms.Add($"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)");
-                }
-                else if (tokens.Count == 1)
-                {
-                    // Single token: prefix search to match partial words
-                    // e.g. "anim" -> anim*  (matches "animist", "animation", etc.)
-                    ftsTerms.Add($"{tokens[0]}*");
-                }
+                    Files = new List<IndexedFile>(),
+                    TotalCount = 0,
+                    SearchDuration = sw.Elapsed
+                };
             }
-            var ftsQuery = string.Join(" ", ftsTerms);
+
             parameters.Add("Query", ftsQuery);
 
             string sql;
@@ -300,8 +333,8 @@ public class IndexDbContext : IDisposable
                     """;
             }
 
-            var results = await _connection.QueryAsync<IndexedFileDto>(sql, parameters);
-            var total = await _connection.ExecuteScalarAsync<int>(countSql, parameters);
+            var results = await connection.QueryAsync<IndexedFileDto>(sql, parameters);
+            var total = await connection.ExecuteScalarAsync<int>(countSql, parameters);
 
             sw.Stop();
             return new SearchResult
@@ -327,8 +360,8 @@ public class IndexDbContext : IDisposable
                 countSql = $"SELECT COUNT(*) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}";
             }
 
-            var allFiles = await _connection.QueryAsync<IndexedFileDto>(sql, parameters);
-            var totalCount = await _connection.ExecuteScalarAsync<int>(countSql, parameters);
+            var allFiles = await connection.QueryAsync<IndexedFileDto>(sql, parameters);
+            var totalCount = await connection.ExecuteScalarAsync<int>(countSql, parameters);
 
             sw.Stop();
             return new SearchResult
@@ -338,6 +371,40 @@ public class IndexDbContext : IDisposable
                 SearchDuration = sw.Elapsed
             };
         }
+    }
+
+    // Builds an FTS5 MATCH expression from raw user input.
+    // The unicode61 tokenizer strips punctuation and splits on non-alphanumeric chars,
+    // so "D&D" is indexed as two adjacent tokens "d" and "d". We replicate this splitting:
+    // - Simple words like "animist" become prefix searches: animist*
+    // - Words with punctuation like "d&d" are split into sub-tokens ("d","d")
+    //   and combined with NEAR(..., 0) to require them adjacent, matching the original text.
+    // Returns an empty string when the input yields no usable tokens (e.g. only punctuation),
+    // so callers can avoid issuing an invalid empty MATCH.
+    internal static string BuildFtsQuery(string query)
+    {
+        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var ftsTerms = new List<string>();
+        foreach (var term in terms)
+        {
+            var tokens = System.Text.RegularExpressions.Regex.Split(term, @"[^\p{L}\p{N}]+")
+                .Where(t => t.Length > 0)
+                .ToList();
+
+            if (tokens.Count > 1)
+            {
+                // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
+                // e.g. "d&d" -> NEAR("d" "d", 0)
+                ftsTerms.Add($"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)");
+            }
+            else if (tokens.Count == 1)
+            {
+                // Single token: prefix search to match partial words
+                // e.g. "anim" -> anim*  (matches "animist", "animation", etc.)
+                ftsTerms.Add($"{tokens[0]}*");
+            }
+        }
+        return string.Join(" ", ftsTerms);
     }
 
     public async Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
@@ -372,9 +439,10 @@ public class IndexDbContext : IDisposable
             countSql = $"SELECT COUNT(*) FROM files WHERE extension = @Extension AND {collectionClause}";
         }
 
-        var files = await _connection.QueryAsync<IndexedFileDto>(sql,
+        using var connection = CreateConnection();
+        var files = await connection.QueryAsync<IndexedFileDto>(sql,
             new { Extension = normalizedExt, Limit = limit, Offset = offset });
-        var total = await _connection.ExecuteScalarAsync<int>(countSql, new { Extension = normalizedExt });
+        var total = await connection.ExecuteScalarAsync<int>(countSql, new { Extension = normalizedExt });
 
         sw.Stop();
         return new SearchResult
@@ -396,24 +464,26 @@ public class IndexDbContext : IDisposable
             ? $"collection_id IN ({string.Join(",", collectionIdList!)})"
             : "1=1";
 
+        using var connection = CreateConnection();
+
         if (needsDedup)
         {
             // Count unique paths when showing all or multiple collections
-            stats.TotalFiles = await _connection.ExecuteScalarAsync<int>(
+            stats.TotalFiles = await connection.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(DISTINCT path) FROM files WHERE {collectionClause}");
             // For size, we need to avoid double-counting - use subquery to get distinct paths first
-            stats.TotalSizeBytes = await _connection.ExecuteScalarAsync<long>(
+            stats.TotalSizeBytes = await connection.ExecuteScalarAsync<long>(
                 $"SELECT COALESCE(SUM(size_bytes), 0) FROM (SELECT path, size_bytes FROM files WHERE {collectionClause} GROUP BY path)");
         }
         else
         {
-            stats.TotalFiles = await _connection.ExecuteScalarAsync<int>(
+            stats.TotalFiles = await connection.ExecuteScalarAsync<int>(
                 $"SELECT COUNT(*) FROM files WHERE {collectionClause}");
-            stats.TotalSizeBytes = await _connection.ExecuteScalarAsync<long>(
+            stats.TotalSizeBytes = await connection.ExecuteScalarAsync<long>(
                 $"SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE {collectionClause}");
         }
 
-        var lastIndexed = await _connection.ExecuteScalarAsync<string?>(
+        var lastIndexed = await connection.ExecuteScalarAsync<string?>(
             $"SELECT MAX(indexed_at_utc) FROM files WHERE {collectionClause}");
         if (!string.IsNullOrEmpty(lastIndexed))
         {
@@ -424,7 +494,7 @@ public class IndexDbContext : IDisposable
             ? $"SELECT extension, COUNT(DISTINCT path) as Count FROM files WHERE {collectionClause} GROUP BY extension ORDER BY Count DESC LIMIT 20"
             : $"SELECT extension, COUNT(*) as Count FROM files WHERE {collectionClause} GROUP BY extension ORDER BY Count DESC LIMIT 20";
 
-        var extensions = await _connection.QueryAsync<(string Extension, int Count)>(extensionSql);
+        var extensions = await connection.QueryAsync<(string Extension, int Count)>(extensionSql);
         stats.FilesByExtension = extensions.ToDictionary(e => e.Extension, e => e.Count);
 
         return stats;
@@ -432,20 +502,23 @@ public class IndexDbContext : IDisposable
 
     public async Task ClearAsync()
     {
-        await _connection.ExecuteAsync("DELETE FROM files");
-        await _connection.ExecuteAsync("DELETE FROM files_fts");
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync("DELETE FROM files");
+        await connection.ExecuteAsync("DELETE FROM files_fts");
     }
 
     public async Task ClearCollectionAsync(int collectionId)
     {
-        await _connection.ExecuteAsync(
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync(
             "DELETE FROM files WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
     }
 
     public async Task<bool> FileExistsAsync(string path, DateTime modifiedAtUtc)
     {
-        var result = await _connection.ExecuteScalarAsync<int>(
+        using var connection = CreateConnection();
+        var result = await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM files WHERE path = @Path AND modified_at_utc = @ModifiedAtUtc",
             new { Path = path, ModifiedAtUtc = modifiedAtUtc.ToString("O") });
         return result > 0;
@@ -453,7 +526,8 @@ public class IndexDbContext : IDisposable
 
     public async Task<bool> FileExistsInCollectionAsync(string path, int collectionId, DateTime modifiedAtUtc)
     {
-        var result = await _connection.ExecuteScalarAsync<int>(
+        using var connection = CreateConnection();
+        var result = await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM files WHERE path = @Path AND collection_id = @CollectionId AND modified_at_utc = @ModifiedAtUtc",
             new { Path = path, CollectionId = collectionId, ModifiedAtUtc = modifiedAtUtc.ToString("O") });
         return result > 0;
@@ -461,13 +535,14 @@ public class IndexDbContext : IDisposable
 
     public void Dispose()
     {
-        _connection?.Dispose();
+        _keepAlive?.Dispose();
     }
 
     // File operations methods
     public async Task<IndexedFile?> GetFileByIdAsync(long id)
     {
-        var dto = await _connection.QuerySingleOrDefaultAsync<IndexedFileDto>(
+        using var connection = CreateConnection();
+        var dto = await connection.QuerySingleOrDefaultAsync<IndexedFileDto>(
             "SELECT * FROM files WHERE id = @Id", new { Id = id });
         return dto == null ? null : MapToIndexedFile(dto);
     }
@@ -477,14 +552,16 @@ public class IndexDbContext : IDisposable
         var idList = ids.ToList();
         if (!idList.Any()) return new List<IndexedFile>();
 
-        var dtos = await _connection.QueryAsync<IndexedFileDto>(
-            $"SELECT * FROM files WHERE id IN ({string.Join(",", idList)})");
+        using var connection = CreateConnection();
+        var dtos = await connection.QueryAsync<IndexedFileDto>(
+            "SELECT * FROM files WHERE id IN @Ids", new { Ids = idList });
         return dtos.Select(MapToIndexedFile).ToList();
     }
 
     public async Task UpdateFilePathAsync(long id, string newPath, string newDirectory, string newName, string newExtension)
     {
-        await _connection.ExecuteAsync("""
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync("""
             UPDATE files
             SET path = @Path, directory = @Directory, name = @Name, extension = @Extension
             WHERE id = @Id
@@ -496,15 +573,20 @@ public class IndexDbContext : IDisposable
         var idList = ids.ToList();
         if (!idList.Any()) return;
 
-        await _connection.ExecuteAsync(
-            $"DELETE FROM files WHERE id IN ({string.Join(",", idList)})");
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync(
+            "DELETE FROM files WHERE id IN @Ids", new { Ids = idList });
     }
 
     // Collection methods
     public async Task<List<Collection>> GetCollectionsAsync()
     {
-        var collections = (await _connection.QueryAsync<CollectionDto>(
-            "SELECT * FROM collections ORDER BY name")).ToList();
+        List<CollectionDto> collections;
+        using (var connection = CreateConnection())
+        {
+            collections = (await connection.QueryAsync<CollectionDto>(
+                "SELECT * FROM collections ORDER BY name")).ToList();
+        }
 
         var result = new List<Collection>();
         foreach (var dto in collections)
@@ -521,8 +603,12 @@ public class IndexDbContext : IDisposable
 
     public async Task<Collection?> GetCollectionByIdAsync(int id)
     {
-        var dto = await _connection.QuerySingleOrDefaultAsync<CollectionDto>(
-            "SELECT * FROM collections WHERE id = @Id", new { Id = id });
+        CollectionDto? dto;
+        using (var connection = CreateConnection())
+        {
+            dto = await connection.QuerySingleOrDefaultAsync<CollectionDto>(
+                "SELECT * FROM collections WHERE id = @Id", new { Id = id });
+        }
         if (dto == null) return null;
 
         var collection = MapToCollection(dto);
@@ -536,7 +622,8 @@ public class IndexDbContext : IDisposable
     public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = "__MACOSX")
     {
         var now = DateTime.UtcNow.ToString("O");
-        var id = await _connection.ExecuteScalarAsync<int>("""
+        using var connection = CreateConnection();
+        var id = await connection.ExecuteScalarAsync<int>("""
             INSERT INTO collections (name, description, created_at_utc, excluded_directories)
             VALUES (@Name, @Description, @CreatedAtUtc, @ExcludedDirectories);
             SELECT last_insert_rowid();
@@ -554,15 +641,16 @@ public class IndexDbContext : IDisposable
 
     public async Task UpdateCollectionAsync(int id, string name, string? description, string? excludedDirectories = null)
     {
+        using var connection = CreateConnection();
         if (excludedDirectories != null)
         {
-            await _connection.ExecuteAsync(
+            await connection.ExecuteAsync(
                 "UPDATE collections SET name = @Name, description = @Description, excluded_directories = @ExcludedDirectories WHERE id = @Id",
                 new { Id = id, Name = name, Description = description, ExcludedDirectories = excludedDirectories });
         }
         else
         {
-            await _connection.ExecuteAsync(
+            await connection.ExecuteAsync(
                 "UPDATE collections SET name = @Name, description = @Description WHERE id = @Id",
                 new { Id = id, Name = name, Description = description });
         }
@@ -570,13 +658,15 @@ public class IndexDbContext : IDisposable
 
     public async Task DeleteCollectionAsync(int id)
     {
+        using var connection = CreateConnection();
         // CASCADE will delete collection_paths and files
-        await _connection.ExecuteAsync("DELETE FROM collections WHERE id = @Id", new { Id = id });
+        await connection.ExecuteAsync("DELETE FROM collections WHERE id = @Id", new { Id = id });
     }
 
     public async Task<List<CollectionPath>> GetCollectionPathsAsync(int collectionId)
     {
-        var paths = await _connection.QueryAsync<CollectionPathDto>(
+        using var connection = CreateConnection();
+        var paths = await connection.QueryAsync<CollectionPathDto>(
             "SELECT * FROM collection_paths WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
         return paths.Select(p => new CollectionPath
@@ -589,7 +679,8 @@ public class IndexDbContext : IDisposable
 
     public async Task<CollectionPath> AddCollectionPathAsync(int collectionId, string path)
     {
-        var id = await _connection.ExecuteScalarAsync<int>("""
+        using var connection = CreateConnection();
+        var id = await connection.ExecuteScalarAsync<int>("""
             INSERT INTO collection_paths (collection_id, path)
             VALUES (@CollectionId, @Path);
             SELECT last_insert_rowid();
@@ -605,19 +696,24 @@ public class IndexDbContext : IDisposable
 
     public async Task RemoveCollectionPathAsync(int pathId)
     {
-        await _connection.ExecuteAsync(
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync(
             "DELETE FROM collection_paths WHERE id = @Id", new { Id = pathId });
     }
 
     public async Task<List<PathOverlap>> CheckPathOverlapsAsync(int excludeCollectionId, string newPath)
     {
         var normalizedNewPath = NormalizePath(newPath);
-        var allPaths = await _connection.QueryAsync<(int Id, int Collection_Id, string Path, string CollectionName)>("""
-            SELECT cp.id, cp.collection_id, cp.path, c.name as CollectionName
-            FROM collection_paths cp
-            JOIN collections c ON c.id = cp.collection_id
-            WHERE cp.collection_id != @ExcludeCollectionId
-            """, new { ExcludeCollectionId = excludeCollectionId });
+        IEnumerable<(int Id, int Collection_Id, string Path, string CollectionName)> allPaths;
+        using (var connection = CreateConnection())
+        {
+            allPaths = await connection.QueryAsync<(int Id, int Collection_Id, string Path, string CollectionName)>("""
+                SELECT cp.id, cp.collection_id, cp.path, c.name as CollectionName
+                FROM collection_paths cp
+                JOIN collections c ON c.id = cp.collection_id
+                WHERE cp.collection_id != @ExcludeCollectionId
+                """, new { ExcludeCollectionId = excludeCollectionId });
+        }
 
         var overlaps = new List<PathOverlap>();
         foreach (var existing in allPaths)
@@ -653,11 +749,12 @@ public class IndexDbContext : IDisposable
 
     public async Task<(int FileCount, DateTime? LastIndexedAtUtc)> GetCollectionStatsAsync(int collectionId)
     {
-        var fileCount = await _connection.ExecuteScalarAsync<int>(
+        using var connection = CreateConnection();
+        var fileCount = await connection.ExecuteScalarAsync<int>(
             "SELECT COUNT(*) FROM files WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
 
-        var lastIndexed = await _connection.ExecuteScalarAsync<string?>(
+        var lastIndexed = await connection.ExecuteScalarAsync<string?>(
             "SELECT MAX(indexed_at_utc) FROM files WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
 
