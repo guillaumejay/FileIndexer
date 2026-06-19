@@ -10,6 +10,16 @@ public class ActivityEntry
     public string? ErrorMessage { get; set; }
     public string? ResultMessage { get; set; }
 
+    // Progress tracking for batch operations (extract, copy, move, delete, reindex...).
+    // Null for non-batch entries.
+    public int? ProgressCurrent { get; set; }
+    public int? ProgressTotal { get; set; }
+    public string? CurrentItem { get; set; }
+
+    public string? ProgressText => ProgressCurrent.HasValue && ProgressTotal.HasValue
+        ? $"{ProgressCurrent}/{ProgressTotal}"
+        : null;
+
     public TimeSpan? Duration => CompletedAtUtc.HasValue
         ? CompletedAtUtc.Value - StartedAtUtc
         : DateTime.UtcNow - StartedAtUtc;

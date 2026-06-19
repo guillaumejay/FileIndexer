@@ -52,6 +52,22 @@ public class ActivityLogService
         return entry;
     }
 
+    public void ReportProgress(Guid id, int current, int total, string? currentItem = null)
+    {
+        lock (_lock)
+        {
+            var entry = _entries.FirstOrDefault(e => e.Id == id);
+            if (entry != null)
+            {
+                entry.ProgressCurrent = current;
+                entry.ProgressTotal = total;
+                entry.CurrentItem = currentItem;
+            }
+        }
+
+        OnChanged?.Invoke();
+    }
+
     public void CompleteActivity(Guid id, string? resultMessage = null)
     {
         lock (_lock)

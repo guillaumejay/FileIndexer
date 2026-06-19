@@ -381,8 +381,10 @@
 
         try
         {
+            var reindexedCount = 0;
             foreach (var collection in indexable)
             {
+                ActivityLog.ReportProgress(activity.Id, ++reindexedCount, indexable.Count, collection.Name);
                 pendingReindexIds.Remove(collection.Id);
                 scanningCollectionId = collection.Id;
                 progress = new ScanProgress { IsRunning = true };
@@ -391,10 +393,14 @@
                 var paths = collection.Paths.Select(p => p.Path);
                 var result = await Scanner.ScanCollectionAsync(collection.Id, paths, excludedDirectories: collection.GetExcludedDirectoryList());
                 totalFiles += result.FilesScanned;
+
+                // Refresh this collection's display as soon as it finishes, rather than waiting for the whole batch.
+                scanningCollectionId = null;
+                await LoadCollections();
+                StateHasChanged();
             }
 
             ActivityLog.CompleteActivity(activity.Id, $"{totalFiles:N0} files indexed across {indexable.Count} collections");
-            await LoadCollections();
             await OnCollectionsChanged.InvokeAsync();
         }
         catch (OperationCanceledException)

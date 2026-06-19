@@ -586,8 +586,10 @@
             var errorCount = 0;
             var deletedIds = new List<long>();
 
-            foreach (var file in archives)
+            for (var i = 0; i < archives.Count; i++)
             {
+                var file = archives[i];
+                ActivityLog.ReportProgress(activity.Id, i + 1, archives.Count, file.Name);
                 var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
                 if (result.IsSuccess)
                 {
@@ -637,7 +639,8 @@
         {
             var count = selectedFileIds.Count;
             var activity = ActivityLog.StartActivity($"Copying {count} file(s) to \"{destFolder}\"");
-            var result = await FileOps.CopyFilesAsync(selectedFileIds, destFolder, HandleConflict);
+            var result = await FileOps.CopyFilesAsync(selectedFileIds, destFolder, HandleConflict,
+                (current, total, name) => ActivityLog.ReportProgress(activity.Id, current, total, name));
             if (result.IsSuccess)
             {
                 ActivityLog.CompleteActivity(activity.Id);
@@ -664,7 +667,8 @@
         {
             var count = selectedFileIds.Count;
             var activity = ActivityLog.StartActivity($"Moving {count} file(s) to \"{destFolder}\"");
-            var result = await FileOps.MoveFilesAsync(selectedFileIds, destFolder, HandleConflict);
+            var result = await FileOps.MoveFilesAsync(selectedFileIds, destFolder, HandleConflict,
+                (current, total, name) => ActivityLog.ReportProgress(activity.Id, current, total, name));
             if (result.IsSuccess)
             {
                 ActivityLog.CompleteActivity(activity.Id);
@@ -689,7 +693,8 @@
         CloseContextMenu();
         var count = selectedFileIds.Count;
         var activity = ActivityLog.StartActivity($"Deleting {count} file(s)");
-        var result = await FileOps.DeleteFilesAsync(selectedFileIds);
+        var result = await FileOps.DeleteFilesAsync(selectedFileIds,
+            (current, total, name) => ActivityLog.ReportProgress(activity.Id, current, total, name));
         if (result.IsSuccess)
         {
             ActivityLog.CompleteActivity(activity.Id);

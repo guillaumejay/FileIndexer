@@ -14,6 +14,17 @@ public static class MauiProgram
 {
     public static MauiApp CreateMauiApp()
     {
+        // Workaround for a .NET MAUI bug: ConfigureEnvironmentVariables strips the
+        // DOTNET_ / ASPNETCORE_ prefixes and adds the remainder to a case-insensitive
+        // config dictionary. When both DOTNET_ENVIRONMENT and ASPNETCORE_ENVIRONMENT are
+        // set they both reduce to "ENVIRONMENT", throwing "An item with the same key has
+        // already been added. Key: ENVIRONMENT". Drop the redundant one before building.
+        if (Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") is not null &&
+            Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT") is not null)
+        {
+            Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", null);
+        }
+
         var builder = MauiApp.CreateBuilder();
         builder
             .UseMauiApp<App>()

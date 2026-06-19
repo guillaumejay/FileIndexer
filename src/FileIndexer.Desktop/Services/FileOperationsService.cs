@@ -129,7 +129,7 @@ public class FileOperationsService
         }
     }
 
-    public async Task<OperationResult> CopyFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict)
+    public async Task<OperationResult> CopyFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null)
     {
         if (!Directory.Exists(destinationFolder))
         {
@@ -143,8 +143,11 @@ public class FileOperationsService
         }
 
         var copiedFiles = new List<IndexedFile>();
+        var processed = 0;
         foreach (var file in files)
         {
+            onProgress?.Invoke(++processed, files.Count, file.Name);
+
             if (!File.Exists(file.Path))
             {
                 continue;
@@ -201,7 +204,7 @@ public class FileOperationsService
         return OperationResult.Success();
     }
 
-    public async Task<OperationResult> MoveFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict)
+    public async Task<OperationResult> MoveFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null)
     {
         if (!Directory.Exists(destinationFolder))
         {
@@ -214,8 +217,11 @@ public class FileOperationsService
             return OperationResult.Failure("Aucun fichier trouvé");
         }
 
+        var processed = 0;
         foreach (var file in files)
         {
+            onProgress?.Invoke(++processed, files.Count, file.Name);
+
             if (!File.Exists(file.Path))
             {
                 continue;
@@ -255,7 +261,7 @@ public class FileOperationsService
         return OperationResult.Success();
     }
 
-    public async Task<OperationResult> DeleteFilesAsync(IEnumerable<long> fileIds)
+    public async Task<OperationResult> DeleteFilesAsync(IEnumerable<long> fileIds, Action<int, int, string>? onProgress = null)
     {
         var files = await _db.GetFilesByIdsAsync(fileIds);
         if (!files.Any())
@@ -264,8 +270,11 @@ public class FileOperationsService
         }
 
         var deletedIds = new List<long>();
+        var processed = 0;
         foreach (var file in files)
         {
+            onProgress?.Invoke(++processed, files.Count, file.Name);
+
             if (!File.Exists(file.Path))
             {
                 deletedIds.Add(file.Id);

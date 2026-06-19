@@ -1280,6 +1280,16 @@ button {
     margin-top: 0.125rem;
 }
 
+.activity-progress {
+    display: block;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin-top: 0.125rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .activity-error {
     display: block;
     font-size: 0.75rem;

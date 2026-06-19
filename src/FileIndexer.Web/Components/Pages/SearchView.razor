@@ -591,8 +591,10 @@
             var errorCount = 0;
             var deletedIds = new List<long>();
 
-            foreach (var file in archives)
+            for (var i = 0; i < archives.Count; i++)
             {
+                var file = archives[i];
+                ActivityLog.ReportProgress(activity.Id, i + 1, archives.Count, file.Name);
                 var result = await ArchiveSvc.ExtractSmartAsync(file.Path);
                 if (result.IsSuccess)
                 {
@@ -647,7 +649,8 @@
 
         var count = selectedFileIds.Count;
         var activity = ActivityLog.StartActivity($"Deleting {count} file(s)");
-        var result = await FileOps.DeleteFilesAsync(selectedFileIds);
+        var result = await FileOps.DeleteFilesAsync(selectedFileIds,
+            (current, total, name) => ActivityLog.ReportProgress(activity.Id, current, total, name));
         if (!result.IsSuccess)
         {
             ActivityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
@@ -695,13 +698,16 @@
 
         OperationResult result;
 
+        Action<int, int, string> reportProgress =
+            (current, total, name) => ActivityLog.ReportProgress(activity.Id, current, total, name);
+
         if (pendingOperation == FileOperationType.Copy)
         {
-            result = await FileOps.CopyFilesAsync(selectedFileIds, destinationFolder, HandleConflict);
+            result = await FileOps.CopyFilesAsync(selectedFileIds, destinationFolder, HandleConflict, reportProgress);
         }
         else
         {
-            result = await FileOps.MoveFilesAsync(selectedFileIds, destinationFolder, HandleConflict);
+            result = await FileOps.MoveFilesAsync(selectedFileIds, destinationFolder, HandleConflict, reportProgress);
         }
 
         if (!result.IsSuccess && !result.IsCancelled)

@@ -50,6 +50,10 @@
                         </span>
                         <span class="activity-desc">
                             @entry.Description
+                            @if (entry.Status == ActivityStatus.Running && entry.ProgressText is not null)
+                            {
+                                <span class="activity-progress">@entry.ProgressText@(entry.CurrentItem is not null ? $" — {entry.CurrentItem}" : "")</span>
+                            }
                             @if (entry.Duration.HasValue)
                             {
                                 <span class="activity-duration">@FormatDuration(entry.Duration.Value)</span>
