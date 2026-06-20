@@ -99,12 +99,15 @@ public class ArchiveService
                     if (entry.IsDirectory)
                         continue;
 
-                    var destPath = Path.Combine(extractDir, entry.Key!);
-
-                    // Security: prevent path traversal
-                    var fullDest = Path.GetFullPath(destPath);
+                    // Security: prevent path traversal. Resolve the entry against the extraction
+                    // dir and require it to stay strictly inside. The trailing separator stops a
+                    // sibling like "extract-evil" from matching the prefix of "extract".
+                    var fullDest = Path.GetFullPath(Path.Combine(extractDir, entry.Key!));
                     var fullExtractDir = Path.GetFullPath(extractDir);
-                    if (!fullDest.StartsWith(fullExtractDir, StringComparison.OrdinalIgnoreCase))
+                    var extractDirPrefix = fullExtractDir.EndsWith(Path.DirectorySeparatorChar)
+                        ? fullExtractDir
+                        : fullExtractDir + Path.DirectorySeparatorChar;
+                    if (!fullDest.StartsWith(extractDirPrefix, StringComparison.OrdinalIgnoreCase))
                     {
                         _logger.LogWarning(
                             "Skipped archive entry escaping the extraction directory (path traversal): {Entry} in {Archive}",
@@ -112,15 +115,13 @@ public class ArchiveService
                         continue;
                     }
 
-                    var destDir = Path.GetDirectoryName(destPath);
+                    var destDir = Path.GetDirectoryName(fullDest);
                     if (destDir != null && !Directory.Exists(destDir))
                         Directory.CreateDirectory(destDir);
 
-                    entry.WriteToDirectory(extractDir, new ExtractionOptions
-                    {
-                        ExtractFullPath = true,
-                        Overwrite = true
-                    });
+                    // Write to the already-validated path instead of WriteToDirectory, which would
+                    // re-resolve entry.Key itself and bypass the check above.
+                    entry.WriteToFile(fullDest, new ExtractionOptions { Overwrite = true });
 
                     extractedFiles.Add(fullDest);
                 }

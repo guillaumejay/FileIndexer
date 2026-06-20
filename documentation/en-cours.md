@@ -31,10 +31,6 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
   `publish/win/appsettings.json`) → externaliser / valeur par défaut neutre.
 - **Chemin DB relatif** `fileindex.db` non normalisé (`Path.GetFullPath`) → dépend du
   working directory selon le point de lancement.
-- **Garde anti-path-traversal** de `ArchiveService` imparfait : `StartsWith(fullExtractDir)`
-  sans séparateur final (faux positif `extract` vs `extract2`) et l'écriture réelle
-  (`entry.WriteToDirectory(extractDir, ExtractFullPath:true)`) refait sa propre résolution.
-  → valider via le séparateur et/ou écrire vers le chemin déjà validé.
 - **Cohérence langue** : messages d'erreur en français dans les services alors que
   `agents.md` demande *"consistent English"*. Harmoniser (UI vs core).
 
@@ -54,6 +50,9 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
   anglais, messages UI en FR.
 - **#8** Dépendance vulnérable (NU1903) : `SQLitePCLRaw.bundle_e_sqlite3` épinglé en 3.0.3
   pour écraser le transitif 2.1.11 vulnérable. (`FileIndexer.Core.csproj`)
+- **Path-traversal `ArchiveService`** : containment validé avec séparateur final (plus de
+  faux positif `data` vs `data-evil`) + écriture vers le chemin validé (`WriteToFile`) au
+  lieu de `WriteToDirectory` qui re-résolvait `entry.Key`. Test de régression ajouté.
 - **CI** Build cassé (version vide → MSB4044) corrigé + warnings MAUI (CS0649, CS0618,
   CA1416) et action `gh-release` v2. CI verte, 0 warning code.
 - Bonus : `id IN (...)` paramétré (Dapper) ; bug env `DOTNET_ENVIRONMENT` /

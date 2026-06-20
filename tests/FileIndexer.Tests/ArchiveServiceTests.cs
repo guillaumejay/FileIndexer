@@ -50,6 +50,32 @@ public class ArchiveServiceTests
         Assert.All(result.ExtractedFiles, f => Assert.True(File.Exists(f), $"missing: {f}"));
     }
 
+    [Fact]
+    public async Task ExtractSmartAsync_PathTraversalEntry_IsSkippedNotWrittenOutside()
+    {
+        // Regression: a malicious entry must not escape the extraction directory. The sibling
+        // name "data-evil" shares the prefix of the extract dir "data" and slipped past the old
+        // separator-less StartsWith check.
+        using var temp = new TempDir();
+        var box = Path.Combine(temp.Path, "box");
+        Directory.CreateDirectory(box);
+        var zipPath = Path.Combine(box, "data.zip");
+
+        using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+        {
+            using (var w = new StreamWriter(zip.CreateEntry("keep.txt").Open())) w.Write("safe");
+            // ".." forces a second root (so extraction goes into box/data) and points outside it.
+            using (var w = new StreamWriter(zip.CreateEntry("../data-evil/escape.txt").Open())) w.Write("pwned");
+        }
+
+        var result = await NewService().ExtractSmartAsync(zipPath);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal(1, result.FileCount); // only the safe entry
+        Assert.True(File.Exists(Path.Combine(box, "data", "keep.txt")));
+        Assert.False(File.Exists(Path.Combine(box, "data-evil", "escape.txt")));
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; }
