@@ -85,7 +85,8 @@
 #endif
 
     private bool showPanel;
-    private int runningCount;
+    // Assigned only under #if DESKTOP; stays at default on platforms without activity logging.
+    private int runningCount = 0;
     private List<ActivityEntry> entries = new();
 
     protected override void OnInitialized()

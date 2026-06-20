@@ -25,10 +25,14 @@ public class MauiFolderPickerService : IMauiFolderPickerService
 #else
             // On mobile, we don't support folder picking for scan
             // This should not be called on mobile
-            await Application.Current!.MainPage!.DisplayAlert(
-                "Not Available",
-                "Folder selection is not available on mobile devices.",
-                "OK");
+            var page = Application.Current?.Windows.FirstOrDefault()?.Page;
+            if (page is not null)
+            {
+                await page.DisplayAlertAsync(
+                    "Not Available",
+                    "Folder selection is not available on mobile devices.",
+                    "OK");
+            }
 #endif
             return null;
         }

@@ -251,9 +251,10 @@
     private Collection? editingCollection;
     private bool showDeleteConfirm;
     private Collection? deletingCollection;
-    private bool isScanning;
-    private int? scanningCollectionId;
-    private ScanProgress? progress;
+    // Scan state assigned only under #if DESKTOP; stays at default on mobile (indexing is desktop-only).
+    private bool isScanning = false;
+    private int? scanningCollectionId = null;
+    private ScanProgress? progress = null;
     private HashSet<int> pendingReindexIds = new();
 
     // Import state
