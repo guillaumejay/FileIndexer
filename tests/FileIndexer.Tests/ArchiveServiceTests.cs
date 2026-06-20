@@ -1,10 +1,13 @@
 using System.IO.Compression;
 using FileIndexer.Services;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace FileIndexer.Tests;
 
 public class ArchiveServiceTests
 {
+    private static ArchiveService NewService() => new(NullLogger<ArchiveService>.Instance);
+
     [Theory]
     [InlineData("backup.zip", true)]
     [InlineData("archive.7z", true)]
@@ -20,7 +23,7 @@ public class ArchiveServiceTests
     [Fact]
     public async Task ExtractSmartAsync_NonExistentFile_ReturnsFailure()
     {
-        var svc = new ArchiveService();
+        var svc = NewService();
         var result = await svc.ExtractSmartAsync(Path.Combine(Path.GetTempPath(), "does-not-exist-xyz.zip"));
         Assert.False(result.IsSuccess);
     }
@@ -39,7 +42,7 @@ public class ArchiveServiceTests
         var zipPath = Path.Combine(temp.Path, "bundle.zip");
         ZipFile.CreateFromDirectory(src, zipPath);
 
-        var svc = new ArchiveService();
+        var svc = NewService();
         var result = await svc.ExtractSmartAsync(zipPath);
 
         Assert.True(result.IsSuccess, result.ErrorMessage);

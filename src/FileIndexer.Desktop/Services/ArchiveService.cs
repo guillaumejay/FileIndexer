@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using SharpCompress.Archives;
 using SharpCompress.Common;
 
@@ -9,6 +10,13 @@ public class ArchiveService
     {
         ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz"
     };
+
+    private readonly ILogger<ArchiveService> _logger;
+
+    public ArchiveService(ILogger<ArchiveService> logger)
+    {
+        _logger = logger;
+    }
 
     public static bool IsArchive(string fileName)
     {
@@ -33,20 +41,27 @@ public class ArchiveService
     public async Task<ArchiveExtractResult> ExtractSmartAsync(string archivePath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(archivePath))
+        {
+            _logger.LogWarning("Extraction skipped: archive does not exist: {Path}", archivePath);
             return ArchiveExtractResult.Failure("Le fichier archive n'existe pas");
+        }
 
         var archiveDir = Path.GetDirectoryName(archivePath)!;
         var archiveNameWithoutExt = GetArchiveNameWithoutExtension(archivePath);
 
         try
         {
+            _logger.LogInformation("Extracting archive {Path}", archivePath);
             return await Task.Run(() =>
             {
                 using var archive = ArchiveFactory.OpenArchive(archivePath);
                 var entries = archive.Entries.Where(e => !e.IsDirectory).ToList();
 
                 if (entries.Count == 0)
+                {
+                    _logger.LogWarning("Archive is empty: {Path}", archivePath);
                     return ArchiveExtractResult.Failure("L'archive est vide");
+                }
 
                 // Analyze root level structure
                 var hasSingleRootFolder = HasSingleRootFolder(archive);
@@ -90,7 +105,12 @@ public class ArchiveService
                     var fullDest = Path.GetFullPath(destPath);
                     var fullExtractDir = Path.GetFullPath(extractDir);
                     if (!fullDest.StartsWith(fullExtractDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogWarning(
+                            "Skipped archive entry escaping the extraction directory (path traversal): {Entry} in {Archive}",
+                            entry.Key, archivePath);
                         continue;
+                    }
 
                     var destDir = Path.GetDirectoryName(destPath);
                     if (destDir != null && !Directory.Exists(destDir))
@@ -105,6 +125,10 @@ public class ArchiveService
                     extractedFiles.Add(fullDest);
                 }
 
+                _logger.LogInformation(
+                    "Extracted {Count} file(s) from {Archive} into {Directory}",
+                    extractedFiles.Count, archivePath, extractDir);
+
                 return new ArchiveExtractResult
                 {
                     IsSuccess = true,
@@ -116,10 +140,12 @@ public class ArchiveService
         }
         catch (OperationCanceledException)
         {
+            _logger.LogInformation("Extraction cancelled: {Path}", archivePath);
             throw;
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to extract archive {Path}", archivePath);
             return ArchiveExtractResult.Failure($"Erreur lors de l'extraction : {ex.Message}");
         }
     }

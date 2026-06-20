@@ -25,12 +25,6 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
     le bon endroit pour copy/move/delete ; prévoir un coordinateur pour extract/reindex).
   - Conséquence directe : éviter d'avoir à appliquer chaque correctif **en double**.
 
-### #7 — Logging absent (reste partiel)
-- ✅ `FileOperationsService` : agrégation succès/échecs/skip + `ILogger` injecté, le lot ne
-  s'arrête plus au premier échec (couvert par 10 tests). Voir Fait.
-- ⏳ Reste : aucun `ILogger` dans `ArchiveService` (extraction destructrice non tracée) ;
-  `MauiFolderPickerService` utilise `Debug.WriteLine` ad-hoc.
-
 ## 🟡 Mineur
 
 - **Chemin en dur** `R:\JDR` dans `src/FileIndexer.Web/appsettings.json` (et recopié dans
@@ -53,10 +47,11 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
 - **#3** Création du projet de tests xUnit (22 tests, dont stress de concurrence).
 - **#5** Suppression de tous les `async void` côté MAUI → `async Task`.
 - **#6** Migrations sans exception : vérification `pragma_table_info` avant `ALTER TABLE`.
-- **#7 (partiel)** `FileOperationsService` : `OperationResult` étendu (SuccessCount /
-  SkippedCount / Errors), copy/move/delete continuent sur erreur et agrègent, `ILogger`
-  injecté (logs en anglais). 10 tests ajoutés. Reste : logging `ArchiveService` /
-  `MauiFolderPickerService`.
+- **#7** Échecs partiels + logging. `FileOperationsService` : `OperationResult` étendu
+  (SuccessCount / SkippedCount / Errors), copy/move/delete continuent sur erreur et agrègent,
+  `ILogger` injecté (10 tests). `ArchiveService` et `MauiFolderPickerService` : `ILogger`
+  injecté (extraction tracée, skip path-traversal loggé ; plus de `Debug.WriteLine`). Logs en
+  anglais, messages UI en FR.
 - **#8** Dépendance vulnérable (NU1903) : `SQLitePCLRaw.bundle_e_sqlite3` épinglé en 3.0.3
   pour écraser le transitif 2.1.11 vulnérable. (`FileIndexer.Core.csproj`)
 - **CI** Build cassé (version vide → MSB4044) corrigé + warnings MAUI (CS0649, CS0618,

@@ -1,9 +1,17 @@
 using CommunityToolkit.Maui.Storage;
+using Microsoft.Extensions.Logging;
 
 namespace FileIndexer.Maui.Services;
 
 public class MauiFolderPickerService : IMauiFolderPickerService
 {
+    private readonly ILogger<MauiFolderPickerService> _logger;
+
+    public MauiFolderPickerService(ILogger<MauiFolderPickerService> logger)
+    {
+        _logger = logger;
+    }
+
     public async Task<string?> PickFolderAsync(string? initialPath = null)
     {
         try
@@ -38,7 +46,7 @@ public class MauiFolderPickerService : IMauiFolderPickerService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"Folder picker error: {ex.Message}");
+            _logger.LogError(ex, "Folder picker failed");
             return null;
         }
     }
@@ -67,7 +75,7 @@ public class MauiFolderPickerService : IMauiFolderPickerService
         }
         catch (Exception ex)
         {
-            System.Diagnostics.Debug.WriteLine($"File picker error: {ex.Message}");
+            _logger.LogError(ex, "File picker failed");
             return null;
         }
     }
