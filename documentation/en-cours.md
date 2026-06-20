@@ -27,10 +27,6 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
 
 ## 🟡 Mineur
 
-- **Chemin en dur** `R:\JDR` dans `src/FileIndexer.Web/appsettings.json` (et recopié dans
-  `publish/win/appsettings.json`) → externaliser / valeur par défaut neutre.
-- **Chemin DB relatif** `fileindex.db` non normalisé (`Path.GetFullPath`) → dépend du
-  working directory selon le point de lancement.
 - **Cohérence langue** : messages d'erreur en français dans les services alors que
   `agents.md` demande *"consistent English"*. Harmoniser (UI vs core).
 
@@ -53,6 +49,9 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) mais ne couvre que `IndexD
 - **Path-traversal `ArchiveService`** : containment validé avec séparateur final (plus de
   faux positif `data` vs `data-evil`) + écriture vers le chemin validé (`WriteToFile`) au
   lieu de `WriteToDirectory` qui re-résolvait `entry.Key`. Test de régression ajouté.
+- **Mineurs config Web** : `DefaultScanPath` `R:\JDR` en dur → valeur vide neutre ;
+  chemin DB relatif normalisé via `Path.GetFullPath(..., ContentRootPath)` (indépendant
+  du working directory). (`appsettings.json`, `Program.cs`)
 - **CI** Build cassé (version vide → MSB4044) corrigé + warnings MAUI (CS0649, CS0618,
   CA1416) et action `gh-release` v2. CI verte, 0 warning code.
 - Bonus : `id IN (...)` paramétré (Dapper) ; bug env `DOTNET_ENVIRONMENT` /

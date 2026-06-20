@@ -14,7 +14,8 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddSingleton(appSettings);
-builder.Services.AddSingleton(sp => new IndexDbContext(appSettings.DatabasePath));
+var databasePath = ResolveDatabasePath(appSettings.DatabasePath, builder.Environment.ContentRootPath);
+builder.Services.AddSingleton(sp => new IndexDbContext(databasePath));
 builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddScoped<SearchService>();
 builder.Services.AddScoped<CollectionService>();
@@ -57,3 +58,15 @@ app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
 app.Run();
+
+// Anchor a relative database path to the app content root so it no longer depends on the
+// process working directory (which varies with the launch point). ":memory:" and absolute
+// paths are passed through unchanged.
+static string ResolveDatabasePath(string configured, string baseDir)
+{
+    if (string.IsNullOrWhiteSpace(configured))
+        configured = "fileindex.db";
+    if (configured == ":memory:" || Path.IsPathRooted(configured))
+        return configured;
+    return Path.GetFullPath(configured, baseDir);
+}
