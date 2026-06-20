@@ -3,14 +3,6 @@
 Suivi de la dette technique et des améliorations identifiées lors de l'audit (2026-06-19).
 Les éléments **faits** sont en bas pour mémoire.
 
-## 🔴 Priorité haute
-
-### Couverture de tests à étendre
-Le projet de tests existe (`tests/FileIndexer.Tests`) et couvre `IndexDbContext`,
-`BuildFtsQuery`, `ArchiveService`, `FileOperationsService`, les services corbeille et
-`FileScannerService`. Manque :
-- `SearchService` (au-delà du build de requête FTS).
-
 ## 🟠 Priorité moyenne
 
 ### #4 — Duplication massive Web / MAUI (~1700 lignes)
@@ -56,7 +48,10 @@ Le projet de tests existe (`tests/FileIndexer.Tests`) et couvre `IndexDbContext`
   6 tests, intégration Windows gated `[WindowsOnlyFact]`.
 - **Tests `FileScannerService`** : scan complet (sous-dossiers), non-incrémental qui purge,
   exclusion par nom de dossier, incrémental (skip inchangés + ajout nouveaux), garde
-  sans-chemin, chemin inexistant. 6 tests. (45 tests au total)
+  sans-chemin, chemin inexistant. 6 tests.
+- **Tests `SearchService`** : filtre collection, tri nom/taille, filtres extension/répertoire,
+  toggle dossiers, `SearchByExtension` (normalisation), stats (comptes/tailles/extensions),
+  pagination. 11 tests. **Couverture haute priorité complète — 56 tests au total.**
 - **CI** Build cassé (version vide → MSB4044) corrigé + warnings MAUI (CS0649, CS0618,
   CA1416) et action `gh-release` v2. CI verte, 0 warning code.
 - Bonus : `id IN (...)` paramétré (Dapper) ; bug env `DOTNET_ENVIRONMENT` /
