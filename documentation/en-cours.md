@@ -7,9 +7,8 @@ Les éléments **faits** sont en bas pour mémoire.
 
 ### Couverture de tests à étendre
 Le projet de tests existe (`tests/FileIndexer.Tests`) et couvre `IndexDbContext`,
-`BuildFtsQuery`, `ArchiveService`, `FileOperationsService` et les services corbeille.
-Manquent :
-- `FileScannerService` (scan parallèle, scan incrémental, exclusions).
+`BuildFtsQuery`, `ArchiveService`, `FileOperationsService`, les services corbeille et
+`FileScannerService`. Manque :
 - `SearchService` (au-delà du build de requête FTS).
 
 ## 🟠 Priorité moyenne
@@ -54,7 +53,10 @@ Manquent :
   du working directory). (`appsettings.json`, `Program.cs`)
 - **Tests corbeille** : `WindowsTrashService` (chemin inexistant, fichier/dossier réels →
   corbeille, `IsSupported`), `MacTrashService.IsSupported`, branche Linux non-supporté.
-  6 tests, intégration Windows gated `[WindowsOnlyFact]`. (39 tests au total)
+  6 tests, intégration Windows gated `[WindowsOnlyFact]`.
+- **Tests `FileScannerService`** : scan complet (sous-dossiers), non-incrémental qui purge,
+  exclusion par nom de dossier, incrémental (skip inchangés + ajout nouveaux), garde
+  sans-chemin, chemin inexistant. 6 tests. (45 tests au total)
 - **CI** Build cassé (version vide → MSB4044) corrigé + warnings MAUI (CS0649, CS0618,
   CA1416) et action `gh-release` v2. CI verte, 0 warning code.
 - Bonus : `id IN (...)` paramétré (Dapper) ; bug env `DOTNET_ENVIRONMENT` /
