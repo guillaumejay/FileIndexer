@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using FileIndexer.Data;
 using FileIndexer.Models;
+using Microsoft.Extensions.Logging;
 
 namespace FileIndexer.Services;
 
@@ -9,11 +10,13 @@ public class FileOperationsService
 {
     private readonly IndexDbContext _db;
     private readonly ITrashService _trashService;
+    private readonly ILogger<FileOperationsService> _logger;
 
-    public FileOperationsService(IndexDbContext db, ITrashService trashService)
+    public FileOperationsService(IndexDbContext db, ITrashService trashService, ILogger<FileOperationsService> logger)
     {
         _db = db;
         _trashService = trashService;
+        _logger = logger;
     }
 
     public async Task<IEnumerable<IndexedFile>> GetFilesByIdsAsync(IEnumerable<long> ids)
@@ -143,6 +146,8 @@ public class FileOperationsService
         }
 
         var copiedFiles = new List<IndexedFile>();
+        var errors = new List<FileOperationError>();
+        var skipped = 0;
         var processed = 0;
         foreach (var file in files)
         {
@@ -150,6 +155,8 @@ public class FileOperationsService
 
             if (!File.Exists(file.Path))
             {
+                skipped++;
+                _logger.LogWarning("Copy skipped: source file no longer exists: {Path}", file.Path);
                 continue;
             }
 
@@ -162,6 +169,12 @@ public class FileOperationsService
                 switch (resolution)
                 {
                     case ConflictResolution.Cancel:
+                        // Persist what was already copied before aborting so the index stays consistent.
+                        if (copiedFiles.Count > 0)
+                        {
+                            await _db.InsertFilesAsync(copiedFiles);
+                        }
+                        _logger.LogInformation("Copy cancelled by user after {Count} file(s).", copiedFiles.Count);
                         return OperationResult.Cancelled();
                     case ConflictResolution.Replace:
                         File.Delete(destPath);
@@ -192,16 +205,17 @@ public class FileOperationsService
             }
             catch (Exception ex)
             {
-                return OperationResult.Failure($"Erreur lors de la copie de {file.Name} : {ex.Message}");
+                errors.Add(new FileOperationError(file.Path, ex.Message));
+                _logger.LogError(ex, "Failed to copy {Path} to {Destination}", file.Path, destPath);
             }
         }
 
-        if (copiedFiles.Any())
+        if (copiedFiles.Count > 0)
         {
             await _db.InsertFilesAsync(copiedFiles);
         }
 
-        return OperationResult.Success();
+        return BuildBatchResult("la copie", copiedFiles.Count, skipped, errors);
     }
 
     public async Task<OperationResult> MoveFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null)
@@ -217,6 +231,9 @@ public class FileOperationsService
             return OperationResult.Failure("Aucun fichier trouvé");
         }
 
+        var errors = new List<FileOperationError>();
+        var skipped = 0;
+        var moved = 0;
         var processed = 0;
         foreach (var file in files)
         {
@@ -224,6 +241,8 @@ public class FileOperationsService
 
             if (!File.Exists(file.Path))
             {
+                skipped++;
+                _logger.LogWarning("Move skipped: source file no longer exists: {Path}", file.Path);
                 continue;
             }
 
@@ -236,6 +255,7 @@ public class FileOperationsService
                 switch (resolution)
                 {
                     case ConflictResolution.Cancel:
+                        _logger.LogInformation("Move cancelled by user after {Count} file(s).", moved);
                         return OperationResult.Cancelled();
                     case ConflictResolution.Replace:
                         File.Delete(destPath);
@@ -251,14 +271,16 @@ public class FileOperationsService
             {
                 File.Move(file.Path, destPath);
                 await _db.UpdateFilePathAsync(file.Id, destPath, destinationFolder, finalName, Path.GetExtension(finalName));
+                moved++;
             }
             catch (Exception ex)
             {
-                return OperationResult.Failure($"Erreur lors du déplacement de {file.Name} : {ex.Message}");
+                errors.Add(new FileOperationError(file.Path, ex.Message));
+                _logger.LogError(ex, "Failed to move {Path} to {Destination}", file.Path, destPath);
             }
         }
 
-        return OperationResult.Success();
+        return BuildBatchResult("le déplacement", moved, skipped, errors);
     }
 
     public async Task<OperationResult> DeleteFilesAsync(IEnumerable<long> fileIds, Action<int, int, string>? onProgress = null)
@@ -270,6 +292,9 @@ public class FileOperationsService
         }
 
         var deletedIds = new List<long>();
+        var errors = new List<FileOperationError>();
+        var skipped = 0;
+        var trashed = 0;
         var processed = 0;
         foreach (var file in files)
         {
@@ -277,28 +302,31 @@ public class FileOperationsService
 
             if (!File.Exists(file.Path))
             {
+                // Already gone from disk: drop the stale index entry.
                 deletedIds.Add(file.Id);
+                skipped++;
+                _logger.LogWarning("Delete: file already absent from disk, removing index entry: {Path}", file.Path);
                 continue;
             }
 
             var result = await _trashService.MoveToTrashAsync(file.Path);
             if (!result.IsSuccess)
             {
-                if (deletedIds.Any())
-                {
-                    await _db.DeleteFilesByIdsAsync(deletedIds);
-                }
-                return result;
+                // Keep going so one failure does not abort the whole batch.
+                errors.Add(new FileOperationError(file.Path, result.ErrorMessage ?? "Échec de mise à la corbeille"));
+                _logger.LogError("Failed to move to trash: {Path}: {Error}", file.Path, result.ErrorMessage);
+                continue;
             }
             deletedIds.Add(file.Id);
+            trashed++;
         }
 
-        if (deletedIds.Any())
+        if (deletedIds.Count > 0)
         {
             await _db.DeleteFilesByIdsAsync(deletedIds);
         }
 
-        return OperationResult.Success();
+        return BuildBatchResult("la suppression", trashed, skipped, errors);
     }
 
     public async Task<EmptyFolderCleanResult> CleanEmptyFoldersAsync(IEnumerable<string> paths)
@@ -353,6 +381,37 @@ public class FileOperationsService
         }
     }
 
+    // Turns the per-file tallies of a batch into a single OperationResult: success when nothing
+    // failed (files missing on disk are skipped, not failures), otherwise an aggregated error.
+    private OperationResult BuildBatchResult(string operationLabel, int succeeded, int skipped, List<FileOperationError> errors)
+    {
+        if (errors.Count == 0)
+        {
+            _logger.LogInformation(
+                "Completed {Operation}: {Succeeded} succeeded, {Skipped} skipped.",
+                operationLabel, succeeded, skipped);
+            return new OperationResult
+            {
+                IsSuccess = true,
+                SuccessCount = succeeded,
+                SkippedCount = skipped
+            };
+        }
+
+        var message = $"Échec de {operationLabel} pour {errors.Count} fichier(s) sur {succeeded + errors.Count} ; voir les journaux.";
+        _logger.LogWarning(
+            "Completed {Operation} with errors: {Succeeded} succeeded, {Skipped} skipped, {Failed} failed.",
+            operationLabel, succeeded, skipped, errors.Count);
+        return new OperationResult
+        {
+            IsSuccess = false,
+            ErrorMessage = message,
+            SuccessCount = succeeded,
+            SkippedCount = skipped,
+            Errors = errors
+        };
+    }
+
     private static string GenerateUniqueName(string directory, string fileName)
     {
         var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
@@ -376,10 +435,24 @@ public class OperationResult
     public bool IsCancelled { get; init; }
     public string? ErrorMessage { get; init; }
 
+    /// <summary>Number of files processed successfully in a batch operation.</summary>
+    public int SuccessCount { get; init; }
+
+    /// <summary>Number of files skipped because they no longer existed on disk.</summary>
+    public int SkippedCount { get; init; }
+
+    /// <summary>Per-file failures collected during a batch; empty when nothing failed.</summary>
+    public IReadOnlyList<FileOperationError> Errors { get; init; } = Array.Empty<FileOperationError>();
+
+    public int FailureCount => Errors.Count;
+
     public static OperationResult Success() => new() { IsSuccess = true };
     public static OperationResult Failure(string message) => new() { IsSuccess = false, ErrorMessage = message };
     public static OperationResult Cancelled() => new() { IsSuccess = false, IsCancelled = true };
 }
+
+/// <summary>A single file-level failure inside a batch operation.</summary>
+public record FileOperationError(string Path, string Message);
 
 public enum ConflictResolution
 {
