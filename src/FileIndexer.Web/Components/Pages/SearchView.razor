@@ -159,7 +159,7 @@
 
 @if (showFolderBrowser)
 {
-    <FolderBrowser OnSelect="OnFolderSelected" OnCancel="OnFolderPickerCancel" InitialPath="@folderBrowserInitialPath" />
+    <FolderBrowser OnSelect="OnFolderSelected" OnCancel="OnFolderPickerCancel" />
 }
 
 @if (showConflictDialog)
@@ -218,7 +218,6 @@
 
     // Folder browser state
     private bool showFolderBrowser;
-    private string? folderBrowserInitialPath;
     private TaskCompletionSource<string?>? folderPickerTcs;
     private FileOperationType pendingOperation;
 
