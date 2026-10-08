@@ -31,11 +31,10 @@ public class IndexDbContextTests
         using var db = new IndexDbContext(":memory:");
         var col = await db.CreateCollectionAsync("test", null);
 
-        await db.InsertFilesAsync(new[]
-        {
+        await db.InsertFilesAsync([
             MakeFile(col.Id, "animist-guide.pdf"),
             MakeFile(col.Id, "warrior.txt")
-        });
+        ]);
 
         var result = await db.SearchAsync("anim");
 
