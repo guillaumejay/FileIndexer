@@ -54,7 +54,7 @@ public class ArchiveService
             _logger.LogInformation("Extracting archive {Path}", archivePath);
             return await Task.Run(() =>
             {
-                using var archive = ArchiveFactory.OpenArchive(archivePath);
+                using var archive = ArchiveFactory.Open(archivePath);
                 var entries = archive.Entries.Where(e => !e.IsDirectory).ToList();
 
                 if (entries.Count == 0)
