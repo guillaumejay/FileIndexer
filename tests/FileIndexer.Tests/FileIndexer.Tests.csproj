@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="bunit" Version="2.11.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.1" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
     <PackageReference Include="xunit.v3" Version="4.0.1" />
@@ -21,6 +22,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FileIndexer.Core\FileIndexer.Core.csproj" />
     <ProjectReference Include="..\..\src\FileIndexer.Desktop\FileIndexer.Desktop.csproj" />
+    <ProjectReference Include="..\..\src\FileIndexer.UI\FileIndexer.UI.csproj" />
   </ItemGroup>
 
 </Project>

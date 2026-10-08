@@ -1,0 +1,155 @@
+@* In-page folder browser for hosts without a native picker. It lists the folders of the
+   machine running the app (the server, for the Web host). *@
+
+<Modal Title="Select folder" Size="modal-large" OnClose="OnCancel">
+    <div class="current-path-bar">
+        <button class="btn-icon-sm" @onclick="GoUp" disabled="@(currentPath == null)" title="Go up">⬆️</button>
+        <span class="current-path">@(currentPath ?? "Computer")</span>
+    </div>
+
+    <div class="folder-list">
+        @if (currentPath == null)
+        {
+            @foreach (var drive in drives)
+            {
+                <div class="folder-item" @ondblclick="() => NavigateTo(drive)">
+                    <span class="folder-icon">💾</span>
+                    <span class="folder-name">@drive</span>
+                </div>
+            }
+        }
+        else
+        {
+            @foreach (var dir in directories)
+            {
+                <div class="folder-item @(selectedFolder == dir ? "selected" : "")"
+                     @onclick="() => selectedFolder = dir"
+                     @ondblclick="() => NavigateTo(dir)">
+                    <span class="folder-icon">📁</span>
+                    <span class="folder-name">@Path.GetFileName(dir)</span>
+                </div>
+            }
+            @if (directories.Count == 0)
+            {
+                <div class="empty-folder">No subfolders</div>
+            }
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="browser-error">@errorMessage</div>
+    }
+
+    <div class="selected-path-bar">
+        <label>Selected:</label>
+        <input type="text" @bind="selectedFolder" @bind:event="oninput" placeholder="Select a folder or type a path" />
+    </div>
+
+    <div class="modal-actions">
+        <button class="btn-secondary" @onclick="OnCancel">Cancel</button>
+        <button class="btn-primary" @onclick="Confirm" disabled="@string.IsNullOrWhiteSpace(selectedFolder)">Select</button>
+    </div>
+</Modal>
+
+@code {
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    [Parameter] public string? InitialPath { get; set; }
+
+    private string? currentPath;
+    private string? selectedFolder;
+    private List<string> drives = new();
+    private List<string> directories = new();
+    private string? errorMessage;
+
+    protected override void OnInitialized()
+    {
+        try
+        {
+            drives = DriveInfo.GetDrives()
+                .Where(d => d.IsReady)
+                .Select(d => d.RootDirectory.FullName)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading drives: {ex.Message}";
+        }
+
+        if (!string.IsNullOrEmpty(InitialPath) && Directory.Exists(InitialPath))
+        {
+            NavigateTo(InitialPath);
+        }
+    }
+
+    private void LoadDirectories()
+    {
+        directories.Clear();
+        errorMessage = null;
+
+        if (string.IsNullOrEmpty(currentPath)) return;
+
+        try
+        {
+            directories = Directory.GetDirectories(currentPath)
+                .Where(d => !IsHiddenOrSystem(d))
+                .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            errorMessage = "Access denied to this folder.";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+        }
+    }
+
+    private static bool IsHiddenOrSystem(string path)
+    {
+        try
+        {
+            var attrs = File.GetAttributes(path);
+            return (attrs & (FileAttributes.Hidden | FileAttributes.System)) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void NavigateTo(string path)
+    {
+        currentPath = path;
+        selectedFolder = path;
+        LoadDirectories();
+    }
+
+    private void GoUp()
+    {
+        if (currentPath == null) return;
+
+        var parent = Directory.GetParent(currentPath);
+        if (parent == null)
+        {
+            // At the root of a drive: back to the drive list
+            currentPath = null;
+            selectedFolder = null;
+            directories.Clear();
+        }
+        else
+        {
+            NavigateTo(parent.FullName);
+        }
+    }
+
+    private async Task Confirm()
+    {
+        if (!string.IsNullOrWhiteSpace(selectedFolder))
+        {
+            await OnSelect.InvokeAsync(selectedFolder.Trim());
+        }
+    }
+}

@@ -1,0 +1,71 @@
+@inject DatabaseManager Databases
+@inject IndexDbContext Db
+@inject NavigationManager Navigation
+@inject IServiceProvider Services
+
+<div class="settings-group">
+    <label class="settings-label">Database</label>
+    <div class="current-db-path">@(Databases.CurrentPath ?? "No database selected")</div>
+    @if (DatabaseManager.CopiesIntoAppStorage)
+    {
+        <p class="field-hint">A copy is kept on this device. Select the synced file again to refresh it.</p>
+    }
+    <div class="settings-actions">
+        <button class="btn-secondary" @onclick="Select">
+            @(DatabaseManager.CopiesIntoAppStorage ? "Select / refresh" : "Change database")
+        </button>
+        @if (folderPicker != null)
+        {
+            <button class="btn-primary" @onclick="Create">Create new</button>
+        }
+    </div>
+    @if (error != null)
+    {
+        <span class="field-error">@error</span>
+    }
+</div>
+
+@code {
+    private INativeFolderPicker? folderPicker;
+    private string? error;
+
+    protected override void OnInitialized()
+    {
+        folderPicker = Services.GetService<INativeFolderPicker>();
+    }
+
+    private async Task Select()
+    {
+        error = null;
+        try
+        {
+            if (await Databases.SelectAsync(Db))
+            {
+                Reload();
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Cannot open the database: {ex.Message}";
+        }
+    }
+
+    private async Task Create()
+    {
+        error = null;
+        try
+        {
+            var folder = await folderPicker!.PickFolderAsync();
+            if (folder == null) return;
+            Databases.Create(Db, folder);
+            Reload();
+        }
+        catch (Exception ex)
+        {
+            error = $"Cannot create the database: {ex.Message}";
+        }
+    }
+
+    // Rebuild every component so nothing keeps showing data from the previous database.
+    private void Reload() => Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+}

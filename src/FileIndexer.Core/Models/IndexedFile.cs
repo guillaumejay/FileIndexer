@@ -84,6 +84,8 @@ public class IndexStats
 
 public class ScanProgress
 {
+    // The scanner is shared by every UI session: this tells them which collection is being scanned.
+    public int? CollectionId { get; set; }
     public int FilesScanned { get; set; }
     public int FilesTotal { get; set; }
     public int DirectoriesScanned { get; set; }

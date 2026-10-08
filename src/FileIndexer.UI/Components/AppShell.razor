@@ -1,0 +1,129 @@
+@inject CollectionService CollectionSvc
+@inject BuildInfoService BuildInfo
+@inject FileIndexerJs Js
+@inject ILogger<AppShell> Logger
+
+<div class="page-container">
+    <header class="app-header-bar">
+        <div class="header-row">
+            <h1 class="app-title">File Indexer</h1>
+            <div class="tab-nav">
+                <button class="tab-btn @(activeTab == Tab.Search ? "active" : "")" @onclick="() => SetTab(Tab.Search)">🔍 Search</button>
+                <button class="tab-btn @(activeTab == Tab.Collections ? "active" : "")" @onclick="() => SetTab(Tab.Collections)">📁 Collections</button>
+            </div>
+            <div class="header-buttons">
+                <ActivityIndicator />
+                <button class="btn-icon" @onclick="ToggleTheme" title="Toggle theme">@(isLightTheme ? "🌙" : "☀️")</button>
+                <button class="btn-icon" @onclick="() => showSettings = true" title="Settings">⚙️</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="tab-content">
+        <ErrorBoundary @ref="errorBoundary">
+            <ChildContent>
+                @if (activeTab == Tab.Search)
+                {
+                    <SearchView @ref="searchView" Collections="collections" />
+                }
+                else
+                {
+                    <CollectionsView OnCollectionsChanged="OnCollectionsChanged" />
+                }
+            </ChildContent>
+            <ErrorContent Context="ex">
+                <div class="error-panel">
+                    <h2>Something went wrong</h2>
+                    <pre>@ex.Message</pre>
+                    <button class="btn-primary" @onclick="() => errorBoundary?.Recover()">Retry</button>
+                </div>
+            </ErrorContent>
+        </ErrorBoundary>
+    </div>
+</div>
+
+@if (showSettings)
+{
+    <Modal Title="Settings" Size="modal-small" OnClose="() => showSettings = false">
+        @SettingsContent
+        <div class="settings-group">
+            <label class="settings-label">Application</label>
+            <div class="settings-info">
+                <div>Version: <strong>@BuildInfo.Version</strong></div>
+                <div>Build date: <strong>@BuildInfo.BuildDate.ToLocalTime().ToString("g")</strong></div>
+            </div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn-primary" @onclick="() => showSettings = false">Close</button>
+        </div>
+    </Modal>
+}
+
+@code {
+    // Host-specific settings (e.g. database selection on MAUI), shown above the app info.
+    [Parameter] public RenderFragment? SettingsContent { get; set; }
+
+    private enum Tab { Search, Collections }
+
+    private Tab activeTab = Tab.Search;
+    private bool isLightTheme;
+    private bool showSettings;
+    private List<Collection> collections = new();
+    private SearchView? searchView;
+    private ErrorBoundary? errorBoundary;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCollections();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        try
+        {
+            isLightTheme = await Js.IsLightThemeAsync();
+            StateHasChanged();
+        }
+        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException)
+        {
+            // Prerendering or disconnected circuit: the page script already applied the theme.
+        }
+    }
+
+    private async Task LoadCollections()
+    {
+        try
+        {
+            collections = await CollectionSvc.GetAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Failed to load collections");
+            collections = new();
+        }
+    }
+
+    private void SetTab(Tab tab)
+    {
+        activeTab = tab;
+        // The view of the other tab is disposed: never call into it.
+        searchView = null;
+        errorBoundary?.Recover();
+    }
+
+    private async Task OnCollectionsChanged()
+    {
+        await LoadCollections();
+        if (activeTab == Tab.Search && searchView != null)
+        {
+            await searchView.RefreshDataAsync();
+        }
+    }
+
+    private async Task ToggleTheme()
+    {
+        isLightTheme = !isLightTheme;
+        await Js.SetLightThemeAsync(isLightTheme);
+    }
+}

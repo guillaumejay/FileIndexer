@@ -9,8 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\FileIndexer.Core\FileIndexer.Core.csproj" />
-    <ProjectReference Include="..\FileIndexer.Desktop\FileIndexer.Desktop.csproj" />
+    <ProjectReference Include="..\FileIndexer.UI\FileIndexer.UI.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,767 @@
+@inject SearchService Search
+@inject PlatformCapabilities Capabilities
+@inject IServiceProvider Services
+@inject FileIndexerJs Js
+@inject ILogger<SearchView> Logger
+@implements IDisposable
+
+<div class="view-container">
+    <div class="search-header">
+        <div class="search-wrapper">
+            <input type="text"
+                   class="search-input"
+                   @bind="searchQuery"
+                   @bind:event="oninput"
+                   @bind:after="OnQueryChanged"
+                   placeholder="Search files..." />
+        </div>
+        <div class="collection-filter">
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.All ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.All)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.All)" />
+                All
+            </label>
+            <label class="filter-chip @(fileTypeFilter == FileTypeFilter.Archives ? "selected" : "")">
+                <input type="radio" name="typeFilter" checked="@(fileTypeFilter == FileTypeFilter.Archives)"
+                       @onchange="() => SetTypeFilter(FileTypeFilter.Archives)" />
+                Archives
+            </label>
+            <span class="filter-separator">|</span>
+            <label class="filter-chip @(showFolders ? "selected" : "")">
+                <input type="checkbox" checked="@showFolders" @onchange="ToggleShowFolders" />
+                Folders
+            </label>
+            @if (Collections.Count > 1)
+            {
+                <span class="filter-separator">|</span>
+                @foreach (var col in Collections)
+                {
+                    <label class="filter-chip @(selectedCollectionIds.Contains(col.Id) ? "selected" : "")">
+                        <input type="checkbox"
+                               checked="@selectedCollectionIds.Contains(col.Id)"
+                               @onchange="() => ToggleCollection(col.Id)" />
+                        @col.Name
+                    </label>
+                }
+            }
+        </div>
+    </div>
+
+    <div class="stats-row">
+        <span>📋 @totalCount.ToString("N0") files</span>
+        @if (selected.Count > 0)
+        {
+            <span class="stats-divider">|</span>
+            <span class="selection-count">✓ @selected.Count selected</span>
+        }
+        @if (stats != null)
+        {
+            <span class="stats-divider">|</span>
+            <span>📊 Index: @stats.TotalFiles.ToString("N0")</span>
+            <span class="stats-divider">|</span>
+            <span>💾 @stats.TotalSizeFormatted</span>
+            @if (stats.LastIndexedAtUtc.HasValue)
+            {
+                <span class="stats-divider">|</span>
+                <span>⏱️ @UiFormat.RelativeTime(stats.LastIndexedAtUtc.Value)</span>
+            }
+        }
+    </div>
+
+    @if (loadError != null)
+    {
+        <div class="load-error">⚠️ @loadError</div>
+    }
+
+    @* Keyboard shortcuts live on the list, not the page: keys typed in the search box
+       (e.g. Delete to edit the query) must never act on the selected files. *@
+    <div class="file-list-container" tabindex="0"
+         @onkeydown="OnListKeyDown"
+         @onclick="CloseContextMenu"
+         @oncontextmenu="CloseContextMenu" @oncontextmenu:preventDefault>
+        <table class="file-list-table">
+            <thead>
+                <tr>
+                    @foreach (var (column, label) in Columns)
+                    {
+                        <th class="@(sortColumn == column ? "sorted" : "")" @onclick="() => SetSort(column)">
+                            @label <span class="sort-indicator">@(sortColumn == column ? (sortDirection == SortDirection.Asc ? "▲" : "▼") : "")</span>
+                        </th>
+                    }
+                </tr>
+            </thead>
+            <tbody>
+                <Virtualize @ref="virtualizeRef" ItemsProvider="LoadFilesAsync" ItemSize="26" OverscanCount="20">
+                    <ItemContent>
+                        @{
+                            var file = context;
+                        }
+                        <tr class="@(selected.ContainsKey(file.Id) ? "selected" : "")"
+                            @onclick="e => OnRowClick(e, file)"
+                            @onclick:stopPropagation
+                            @oncontextmenu="e => OnRowContextMenu(e, file)"
+                            @oncontextmenu:preventDefault
+                            @oncontextmenu:stopPropagation>
+                            <td class="file-name" @ondblclick="() => OnNameDoubleClick(file)">
+                                @if (editingFileId == file.Id)
+                                {
+                                    <input type="text"
+                                           class="rename-input"
+                                           @bind="editingName"
+                                           @onkeydown="OnRenameKeyDown"
+                                           @onkeydown:stopPropagation
+                                           @onblur="ConfirmRename" />
+                                }
+                                else
+                                {
+                                    @(file.IsDirectory ? "📁 " : "")@file.Name
+                                }
+                            </td>
+                            <td class="file-dir" title="@file.Directory" @ondblclick="() => OnDirectoryDoubleClick(file)">@file.Directory</td>
+                            <td class="file-ext">@file.Extension</td>
+                            <td class="file-size">@(file.IsDirectory ? "" : file.SizeFormatted)</td>
+                            <td class="file-date">@file.ModifiedAtUtc.ToLocalTime().ToString("g")</td>
+                        </tr>
+                    </ItemContent>
+                    <Placeholder>
+                        <tr>
+                            <td colspan="5" class="placeholder-row">Loading...</td>
+                        </tr>
+                    </Placeholder>
+                </Virtualize>
+            </tbody>
+        </table>
+    </div>
+
+    @if (Capabilities.IsTouch)
+    {
+        <div class="long-press-hint">Long-press a row to copy the file path</div>
+    }
+</div>
+
+@if (contextMenuVisible)
+{
+    <div class="context-menu" style="left: @(contextMenuX)px; top: @(contextMenuY)px;" @onclick:stopPropagation>
+        @if (selected.Count == 1)
+        {
+            @if (fileOps != null)
+            {
+                <div class="context-menu-item" @onclick="OpenSelected">Open</div>
+                <div class="context-menu-item" @onclick="OpenSelectedFolder">Open folder</div>
+            }
+            <div class="context-menu-item" @onclick="FilterBySelectedFolder">Show this folder</div>
+            @if (fileOps != null)
+            {
+                <div class="context-menu-item" @onclick="StartRename">Rename</div>
+            }
+        }
+        @if (archiveSvc != null && selected.Values.Any(f => ArchiveService.IsArchive(f.Name)))
+        {
+            <div class="context-menu-separator"></div>
+            <div class="context-menu-item" @onclick="() => Extract(deleteAfter: false)">Extract</div>
+            <div class="context-menu-item" @onclick="() => Extract(deleteAfter: true)">Extract and delete archive</div>
+        }
+        <div class="context-menu-separator"></div>
+        <div class="context-menu-item" @onclick="CopySelectedPaths">Copy path</div>
+        @if (fileOps != null)
+        {
+            <div class="context-menu-item" @onclick="() => Transfer(move: false)">Copy to...</div>
+            <div class="context-menu-item" @onclick="() => Transfer(move: true)">Move to...</div>
+            <div class="context-menu-separator"></div>
+            <div class="context-menu-item context-menu-danger" @onclick="DeleteSelected">Delete</div>
+        }
+    </div>
+}
+
+<Dialogs @ref="dialogs" />
+<Toast @ref="toast" />
+
+@code {
+    [Parameter] public List<Collection> Collections { get; set; } = new();
+
+    private static readonly (SortColumn Column, string Label)[] Columns =
+    [
+        (SortColumn.Name, "Name"),
+        (SortColumn.Directory, "Directory"),
+        (SortColumn.Extension, "Ext"),
+        (SortColumn.Size, "Size"),
+        (SortColumn.ModifiedAt, "Modified"),
+    ];
+
+    private static readonly string[] ArchiveExtensions = [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz"];
+    private const int MaxRangeSelection = 10_000;
+
+    private Dialogs dialogs = default!;
+    private Toast toast = default!;
+    private Virtualize<IndexedFile>? virtualizeRef;
+
+    // Desktop services; null on hosts without file system access.
+    private FileOperationsService? fileOps;
+    private ArchiveService? archiveSvc;
+    private ActivityLogService? activityLog;
+
+    // Query state
+    private string searchQuery = "";
+    private SortColumn sortColumn = SortColumn.Name;
+    private SortDirection sortDirection = SortDirection.Asc;
+    private FileTypeFilter fileTypeFilter = FileTypeFilter.All;
+    private bool showFolders = true;
+    private HashSet<int> selectedCollectionIds = new();
+    private HashSet<int> knownCollectionIds = new();
+    private int totalCount;
+    private IndexStats? stats;
+    private string? loadError;
+    private CancellationTokenSource? debounceCts;
+
+    // Selection keeps the rows themselves, so actions work even when the rows have scrolled
+    // out of the window Virtualize currently holds.
+    private Dictionary<long, IndexedFile> selected = new();
+    private int? anchorIndex;
+    // Absolute list position of every row loaded since the last refresh (for Shift+click).
+    private Dictionary<long, int> rowIndexById = new();
+
+    // Rename state
+    private long? editingFileId;
+    private string editingName = "";
+    private int? renameSelectionEnd;
+    private long? lastClickedFileId;
+    private DateTime lastClickTime = DateTime.MinValue;
+
+    // Context menu state
+    private bool contextMenuVisible;
+    private double contextMenuX;
+    private double contextMenuY;
+    private bool adjustContextMenu;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Capabilities.HasFileSystemAccess)
+        {
+            fileOps = Services.GetRequiredService<FileOperationsService>();
+            archiveSvc = Services.GetRequiredService<ArchiveService>();
+            activityLog = Services.GetRequiredService<ActivityLogService>();
+        }
+        await LoadStatsAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        // Newly added collections start selected; removed ones drop out.
+        var ids = Collections.Select(c => c.Id).ToHashSet();
+        selectedCollectionIds.IntersectWith(ids);
+        selectedCollectionIds.UnionWith(ids.Except(knownCollectionIds));
+        knownCollectionIds = ids;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        try
+        {
+            if (firstRender)
+            {
+                await Js.InitColumnResizeAsync(".file-list-table");
+            }
+            if (renameSelectionEnd is int end)
+            {
+                renameSelectionEnd = null;
+                await Js.SelectRenameInputAsync(end);
+            }
+            if (adjustContextMenu)
+            {
+                adjustContextMenu = false;
+                await Js.AdjustContextMenuAsync();
+            }
+        }
+        catch (JSDisconnectedException)
+        {
+            // Circuit gone (Web host): nothing left to update.
+        }
+    }
+
+    // Called by the shell after collections changed or files were re-indexed.
+    public async Task RefreshDataAsync()
+    {
+        ClearSelection();
+        await LoadStatsAsync();
+        await RefreshListAsync();
+    }
+
+    // --- Loading -------------------------------------------------------------------------------
+
+    private async Task<SearchResult> QueryAsync(int offset, int count, CancellationToken token)
+    {
+        var (cleanQuery, directoryFilter) = ParseSearchQuery(searchQuery);
+
+        // A text search ranks by relevance unless the user picked another sort.
+        var (column, direction) = !string.IsNullOrWhiteSpace(cleanQuery) && sortColumn == SortColumn.Name && sortDirection == SortDirection.Asc
+            ? (SortColumn.Rank, SortDirection.Asc)
+            : (sortColumn, sortDirection);
+
+        return await Search.SearchWithSortAsync(
+            cleanQuery, column, direction, count, offset,
+            SelectedCollectionFilter(),
+            fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null,
+            directoryFilter,
+            showFolders ? null : false,
+            token);
+    }
+
+    private async ValueTask<ItemsProviderResult<IndexedFile>> LoadFilesAsync(ItemsProviderRequest request)
+    {
+        try
+        {
+            var result = await QueryAsync(request.StartIndex, request.Count, request.CancellationToken);
+            for (var i = 0; i < result.Files.Count; i++)
+            {
+                rowIndexById[result.Files[i].Id] = request.StartIndex + i;
+            }
+
+            if (totalCount != result.TotalCount || loadError != null)
+            {
+                totalCount = result.TotalCount;
+                loadError = null;
+                _ = InvokeAsync(StateHasChanged);
+            }
+            return new ItemsProviderResult<IndexedFile>(result.Files, result.TotalCount);
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Virtualize expects this for superseded requests
+        }
+        catch (Exception ex)
+        {
+            // e.g. the database is locked by a long scan: report it instead of tearing down the session.
+            Logger.LogError(ex, "Search failed");
+            loadError = $"Search failed: {ex.Message}";
+            _ = InvokeAsync(StateHasChanged);
+            return new ItemsProviderResult<IndexedFile>(Array.Empty<IndexedFile>(), 0);
+        }
+    }
+
+    private async Task LoadStatsAsync()
+    {
+        try
+        {
+            stats = await Search.GetStatsAsync(SelectedCollectionFilter());
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Loading index stats failed");
+            stats = null;
+        }
+    }
+
+    private async Task RefreshListAsync()
+    {
+        rowIndexById.Clear();
+        anchorIndex = null;
+        if (virtualizeRef != null)
+        {
+            await virtualizeRef.RefreshDataAsync();
+        }
+        StateHasChanged();
+    }
+
+    private IEnumerable<int>? SelectedCollectionFilter() =>
+        selectedCollectionIds.Count == 0 || selectedCollectionIds.Count == Collections.Count ? null : selectedCollectionIds;
+
+    private static readonly System.Text.RegularExpressions.Regex DirFilterRegex = new(
+        @"dir:""([^""]+)""|dir:(\S+)",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static (string cleanQuery, string? directoryFilter) ParseSearchQuery(string query)
+    {
+        string? directoryFilter = null;
+        var clean = DirFilterRegex.Replace(query, m =>
+        {
+            directoryFilter = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            return "";
+        }).Trim();
+        return (clean, directoryFilter);
+    }
+
+    // --- Filters and sort ----------------------------------------------------------------------
+
+    // Debounced: only the last keystroke of a burst queries the index.
+    private async Task OnQueryChanged()
+    {
+        debounceCts?.Cancel();
+        var cts = debounceCts = new CancellationTokenSource();
+        try
+        {
+            await Task.Delay(250, cts.Token);
+            await RefreshListAsync();
+        }
+        catch (OperationCanceledException)
+        {
+            // superseded by a newer keystroke
+        }
+    }
+
+    private Task SetSort(SortColumn column)
+    {
+        if (sortColumn == column)
+        {
+            sortDirection = sortDirection == SortDirection.Asc ? SortDirection.Desc : SortDirection.Asc;
+        }
+        else
+        {
+            sortColumn = column;
+            sortDirection = column is SortColumn.Size or SortColumn.ModifiedAt ? SortDirection.Desc : SortDirection.Asc;
+        }
+        return RefreshListAsync();
+    }
+
+    private async Task ToggleCollection(int collectionId)
+    {
+        if (!selectedCollectionIds.Remove(collectionId))
+        {
+            selectedCollectionIds.Add(collectionId);
+        }
+        await LoadStatsAsync();
+        await RefreshListAsync();
+    }
+
+    private Task ToggleShowFolders()
+    {
+        showFolders = !showFolders;
+        return RefreshListAsync();
+    }
+
+    private Task SetTypeFilter(FileTypeFilter filter)
+    {
+        fileTypeFilter = filter;
+        return RefreshListAsync();
+    }
+
+    private async Task FilterBySelectedFolder()
+    {
+        CloseContextMenu();
+        var file = selected.Values.FirstOrDefault();
+        if (file != null)
+        {
+            searchQuery = $"dir:\"{file.Directory}\"";
+            await RefreshListAsync();
+        }
+    }
+
+    // --- Selection -----------------------------------------------------------------------------
+
+    private void ClearSelection()
+    {
+        selected.Clear();
+        anchorIndex = null;
+    }
+
+    private void SelectOnly(IndexedFile file)
+    {
+        selected.Clear();
+        selected[file.Id] = file;
+        anchorIndex = rowIndexById.TryGetValue(file.Id, out var index) ? index : null;
+    }
+
+    private async Task OnRowClick(MouseEventArgs e, IndexedFile file)
+    {
+        CloseContextMenu();
+
+        if (e.CtrlKey || e.MetaKey)
+        {
+            if (!selected.Remove(file.Id))
+            {
+                selected[file.Id] = file;
+            }
+            anchorIndex = rowIndexById.TryGetValue(file.Id, out var index) ? index : anchorIndex;
+            lastClickedFileId = null;
+        }
+        else if (e.ShiftKey && anchorIndex.HasValue && rowIndexById.TryGetValue(file.Id, out var target))
+        {
+            await SelectRangeAsync(anchorIndex.Value, target);
+            lastClickedFileId = null;
+        }
+        else
+        {
+            // A second click on the only selected row after a pause starts renaming (like Explorer).
+            var sinceLastClick = (DateTime.UtcNow - lastClickTime).TotalMilliseconds;
+            if (fileOps != null && lastClickedFileId == file.Id && sinceLastClick is >= 500 and <= 1500
+                && selected.Count == 1 && selected.ContainsKey(file.Id))
+            {
+                StartRenameForSelected();
+                return;
+            }
+
+            SelectOnly(file);
+            lastClickedFileId = file.Id;
+            lastClickTime = DateTime.UtcNow;
+        }
+    }
+
+    // The rows between the anchor and the target may not all be loaded: ask the index for them.
+    private async Task SelectRangeAsync(int fromIndex, int toIndex)
+    {
+        var start = Math.Min(fromIndex, toIndex);
+        var count = Math.Min(Math.Abs(toIndex - fromIndex) + 1, MaxRangeSelection);
+        try
+        {
+            var range = await QueryAsync(start, count, CancellationToken.None);
+            selected = range.Files.ToDictionary(f => f.Id);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Range selection failed");
+            toast.Show($"Selection failed: {ex.Message}", error: true);
+        }
+    }
+
+    private async Task OnListKeyDown(KeyboardEventArgs e)
+    {
+        if (editingFileId.HasValue) return; // the rename box handles its own keys
+
+        switch (e.Key)
+        {
+            case "F2" when fileOps != null && selected.Count == 1:
+                StartRenameForSelected();
+                break;
+            case "Delete" when fileOps != null && selected.Count > 0:
+                await DeleteSelected();
+                break;
+            case "Escape":
+                CloseContextMenu();
+                break;
+        }
+    }
+
+    // --- Context menu and row actions -----------------------------------------------------------
+
+    private async Task OnRowContextMenu(MouseEventArgs e, IndexedFile file)
+    {
+        if (!selected.ContainsKey(file.Id))
+        {
+            SelectOnly(file);
+        }
+
+        if (Capabilities.IsTouch)
+        {
+            // Long-press on touch devices
+            await CopyPathsAsync([file.Path]);
+            return;
+        }
+
+        contextMenuX = e.ClientX;
+        contextMenuY = e.ClientY;
+        contextMenuVisible = true;
+        adjustContextMenu = true;
+    }
+
+    private void CloseContextMenu() => contextMenuVisible = false;
+
+    private async Task OnNameDoubleClick(IndexedFile file)
+    {
+        if (fileOps == null)
+        {
+            await CopyPathsAsync([file.Path]);
+            return;
+        }
+        await ReportFailureAsync(await fileOps.OpenFileAsync(file.Path));
+    }
+
+    private async Task OnDirectoryDoubleClick(IndexedFile file)
+    {
+        if (fileOps != null)
+        {
+            await ReportFailureAsync(await fileOps.OpenFolderAsync(file.Path));
+        }
+    }
+
+    private async Task OpenSelected()
+    {
+        CloseContextMenu();
+        if (selected.Values.FirstOrDefault() is { } file)
+            await OnNameDoubleClick(file);
+    }
+
+    private async Task OpenSelectedFolder()
+    {
+        CloseContextMenu();
+        if (selected.Values.FirstOrDefault() is { } file)
+            await OnDirectoryDoubleClick(file);
+    }
+
+    private Task CopySelectedPaths()
+    {
+        CloseContextMenu();
+        return CopyPathsAsync(selected.Values.Select(f => f.Path).ToList());
+    }
+
+    private async Task CopyPathsAsync(IReadOnlyCollection<string> paths)
+    {
+        var copied = await Js.CopyTextAsync(string.Join(Environment.NewLine, paths));
+        toast.Show(copied ? (paths.Count == 1 ? "Path copied" : $"{paths.Count} paths copied") : "Clipboard unavailable", error: !copied);
+    }
+
+    private async Task ReportFailureAsync(OperationResult result)
+    {
+        if (!result.IsSuccess && !result.IsCancelled)
+        {
+            await dialogs.ShowErrorAsync(result.ErrorMessage ?? "Unknown error");
+        }
+    }
+
+    // --- File operations -------------------------------------------------------------------------
+
+    // Shared plumbing of every file operation: activity log entry with progress, error dialog,
+    // success toast, then a refresh of the list and stats.
+    private async Task RunOperationAsync(string description, string successMessage,
+        Func<Action<int, int, string>, Task<OperationResult>> operation)
+    {
+        var activity = activityLog!.StartActivity(description);
+        OperationResult result;
+        try
+        {
+            result = await operation((current, total, name) => activityLog.ReportProgress(activity.Id, current, total, name));
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "{Operation} failed", description);
+            result = OperationResult.Failure(ex.Message);
+        }
+
+        if (result.IsSuccess)
+        {
+            activityLog.CompleteActivity(activity.Id);
+            toast.Show(successMessage);
+            ClearSelection();
+        }
+        else if (result.IsCancelled)
+        {
+            activityLog.FailActivity(activity.Id, "Cancelled");
+        }
+        else
+        {
+            activityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
+            await dialogs.ShowErrorAsync(result.ErrorMessage ?? "The operation failed");
+        }
+
+        await LoadStatsAsync();
+        await RefreshListAsync();
+    }
+
+    private async Task Transfer(bool move)
+    {
+        CloseContextMenu();
+        if (selected.Count == 0) return;
+
+        var destination = await dialogs.PickFolderAsync();
+        if (destination == null) return;
+
+        var ids = selected.Keys.ToList();
+        var verb = move ? "Moving" : "Copying";
+        await RunOperationAsync($"{verb} {UiFormat.Items(ids.Count)} to \"{destination}\"",
+            move ? "Moved" : "Copied",
+            progress => move
+                ? fileOps!.MoveFilesAsync(ids, destination, dialogs.ResolveConflictAsync, progress)
+                : fileOps!.CopyFilesAsync(ids, destination, dialogs.ResolveConflictAsync, progress));
+    }
+
+    private async Task DeleteSelected()
+    {
+        CloseContextMenu();
+        if (selected.Count == 0) return;
+
+        var ids = selected.Keys.ToList();
+        var what = ids.Count == 1 ? $"\"{selected.Values.First().Name}\"" : UiFormat.Items(ids.Count);
+        if (!await dialogs.ConfirmAsync("Delete", $"Move {what} to the trash?", "Delete", danger: true)) return;
+
+        await RunOperationAsync($"Deleting {UiFormat.Items(ids.Count)}", "Moved to trash",
+            progress => fileOps!.DeleteFilesAsync(ids, progress));
+    }
+
+    private async Task Extract(bool deleteAfter)
+    {
+        CloseContextMenu();
+        var archives = selected.Values.Where(f => ArchiveService.IsArchive(f.Name)).ToList();
+        if (archives.Count == 0) return;
+
+        var label = deleteAfter ? "Extracting and deleting" : "Extracting";
+        await RunOperationAsync($"{label} {archives.Count} archive(s)", $"Extracted {archives.Count} archive(s)", async progress =>
+        {
+            var errors = new List<FileOperationError>();
+            var extractedIds = new List<long>();
+            for (var i = 0; i < archives.Count; i++)
+            {
+                progress(i + 1, archives.Count, archives[i].Name);
+                var result = await archiveSvc!.ExtractSmartAsync(archives[i].Path);
+                if (result.IsSuccess)
+                    extractedIds.Add(archives[i].Id);
+                else
+                    errors.Add(new FileOperationError(archives[i].Path, result.ErrorMessage ?? "Extraction failed"));
+            }
+
+            // Only archives that extracted cleanly are deleted.
+            if (deleteAfter && extractedIds.Count > 0)
+            {
+                var deleted = await fileOps!.DeleteFilesAsync(extractedIds);
+                errors.AddRange(deleted.Errors);
+            }
+
+            return errors.Count == 0
+                ? OperationResult.Success()
+                : OperationResult.Failure($"{errors.Count} archive(s) failed: " + string.Join("; ", errors.Select(e => $"{Path.GetFileName(e.Path)}: {e.Message}")));
+        });
+    }
+
+    // --- Rename ----------------------------------------------------------------------------------
+
+    private void StartRename()
+    {
+        CloseContextMenu();
+        StartRenameForSelected();
+    }
+
+    private void StartRenameForSelected()
+    {
+        if (selected.Count != 1) return;
+
+        var file = selected.Values.First();
+        editingFileId = file.Id;
+        editingName = file.Name;
+        // Preselect the name without its extension.
+        var lastDot = file.Name.LastIndexOf('.');
+        renameSelectionEnd = !file.IsDirectory && lastDot > 0 ? lastDot : file.Name.Length;
+        lastClickedFileId = null;
+    }
+
+    private async Task OnRenameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await ConfirmRename();
+        }
+        else if (e.Key == "Escape")
+        {
+            editingFileId = null;
+        }
+    }
+
+    private async Task ConfirmRename()
+    {
+        if (editingFileId is not long fileId) return;
+        editingFileId = null;
+
+        var newName = editingName.Trim();
+        if (string.IsNullOrEmpty(newName) || selected.GetValueOrDefault(fileId)?.Name == newName) return;
+
+        await RunOperationAsync($"Renaming to \"{newName}\"", "Renamed",
+            _ => fileOps!.RenameFileAsync(fileId, newName, dialogs.ResolveConflictAsync));
+    }
+
+    public void Dispose()
+    {
+        debounceCts?.Cancel();
+    }
+
+    private enum FileTypeFilter
+    {
+        All,
+        Archives
+    }
+}

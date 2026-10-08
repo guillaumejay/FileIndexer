@@ -62,10 +62,10 @@ Edit `appsettings.json` (Web) or use the in-app settings (MAUI):
 
 ```json
 {
+  "AllowedHosts": "localhost;127.0.0.1;[::1]",
   "AppSettings": {
-    "DefaultScanPath": "/path/to/nas",
     "DatabasePath": "fileindex.db",
-    "ScanParallelism": 64,
+    "ScanParallelism": 32,
     "ScanBatchSize": 500
   }
 }
@@ -75,27 +75,36 @@ Edit `appsettings.json` (Web) or use the in-app settings (MAUI):
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `DefaultScanPath` | Pre-filled path in the interface | empty |
-| `DatabasePath` | SQLite database location | `fileindex.db` |
-| `ScanParallelism` | Number of parallel threads | 64 |
-| `ScanBatchSize` | Batch size for DB inserts | 500 |
+| `DatabasePath` | SQLite database location (relative paths are resolved against the app folder) | `fileindex.db` |
+| `ScanParallelism` | Number of folders scanned in parallel | 64 |
+| `ScanBatchSize` | Batch size for DB writes | 500 |
+
+> ⚠️ The Web app has **no authentication** and can move, delete and open files on the machine it
+> runs on. It only accepts `localhost` requests by default (`AllowedHosts`). Only widen that, or
+> bind Kestrel to another interface, on a network you fully trust.
 
 ## Architecture
 
 The project is divided into several layers to maximize code reuse:
 
 - **src/FileIndexer.Core**: Shared logic, SQLite FTS5 access, and data models.
-- **src/FileIndexer.Desktop**: Shared desktop-specific logic (Windows/macOS features).
-- **src/FileIndexer.Web**: Blazor Server web application.
-- **src/FileIndexer.Maui**: .NET MAUI Hybrid application sharing the same Blazor components for the UI.
+- **src/FileIndexer.Desktop**: File system services (scanner, file operations, archives, trash).
+- **src/FileIndexer.UI**: Razor Class Library with every Blazor component, the CSS and the JS,
+  shared by both hosts. Host differences go through `PlatformCapabilities` (file system access,
+  touch) and optional host services (`INativeFolderPicker`, `IConfigFileExchange`).
+- **src/FileIndexer.Web**: Blazor Server host (configuration, `Program.cs`, one page).
+- **src/FileIndexer.Maui**: .NET MAUI Hybrid host (database selection, native dialogs). On
+  Android/iOS it is a read-only browser of a synced index: the database is copied into app storage.
 
 ```
 FileIndexer/
 ├── src/
 │   ├── FileIndexer.Core/      # Data Layer & Services
-│   ├── FileIndexer.Desktop/   # OS-specific services
+│   ├── FileIndexer.Desktop/   # File system services
+│   ├── FileIndexer.UI/        # Shared Blazor components, CSS, JS
 │   ├── FileIndexer.Web/       # Web Host
 │   └── FileIndexer.Maui/      # Native Host (Hybrid)
+├── tests/                     # xunit v3 + bUnit (`dotnet test`)
 ├── openspec/                  # Specification-driven development artifacts
 └── agents.md                  # Specialized AI Agent roles
 ```

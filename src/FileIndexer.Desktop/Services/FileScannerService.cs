@@ -52,7 +52,8 @@ public class FileScannerService
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
 
-        _progress = new ScanProgress { IsRunning = true };
+        _progress = new ScanProgress { IsRunning = true, CollectionId = collectionId };
+        NotifyProgress();
         var sw = Stopwatch.StartNew();
 
         try

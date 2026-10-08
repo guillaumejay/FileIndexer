@@ -1,0 +1,43 @@
+@implements IDisposable
+
+@if (message != null)
+{
+    <div class="toast @(isError ? "error" : "")">@message</div>
+}
+
+@code {
+    private string? message;
+    private bool isError;
+    private CancellationTokenSource? hideCts;
+
+    // A new toast replaces the current one and restarts the timer, so overlapping toasts no
+    // longer hide each other early.
+    public void Show(string text, bool error = false)
+    {
+        hideCts?.Cancel();
+        var cts = hideCts = new CancellationTokenSource();
+        _ = InvokeAsync(async () =>
+        {
+            message = text;
+            isError = error;
+            StateHasChanged();
+            await HideAfterDelayAsync(cts.Token);
+        });
+    }
+
+    private async Task HideAfterDelayAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2.5), token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        message = null;
+        StateHasChanged();
+    }
+
+    public void Dispose() => hideCts?.Cancel();
+}

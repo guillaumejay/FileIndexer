@@ -1,39 +1,38 @@
-@inject ActivityLogService ActivityLog
+@inject IServiceProvider Services
+@inject PlatformCapabilities Capabilities
 @implements IDisposable
 
-<div class="activity-indicator" @onclick="TogglePanel" @onclick:stopPropagation>
-    @if (runningCount > 0)
-    {
-        <span class="activity-badge running" title="@runningCount action(s) en cours">
-            <span class="activity-spinner"></span> @runningCount
-        </span>
-    }
-    else
-    {
-        <span class="activity-badge idle" title="Journal d'activit&eacute;">
-            &#x1f4cb;
-        </span>
-    }
-</div>
-
-@if (showPanel)
+@if (activityLog != null)
 {
-    <div class="activity-overlay" @onclick="ClosePanel"></div>
-    <div class="activity-panel">
-        <div class="activity-panel-header">
-            <span>Activity Log</span>
-            <button class="modal-close" @onclick="ClosePanel">&#x2715;</button>
-        </div>
-        <div class="activity-panel-body">
-            @if (entries.Count == 0)
-            {
-                <div class="activity-empty">No recent activity</div>
-            }
-            else
-            {
+    <div class="activity-indicator" @onclick="TogglePanel" @onclick:stopPropagation>
+        @if (runningCount > 0)
+        {
+            <span class="activity-badge running" title="@runningCount running">
+                <span class="activity-spinner"></span> @runningCount
+            </span>
+        }
+        else
+        {
+            <span class="activity-badge idle" title="Activity log">&#x1f4cb;</span>
+        }
+    </div>
+
+    @if (showPanel)
+    {
+        <div class="activity-overlay" @onclick="() => showPanel = false"></div>
+        <div class="activity-panel">
+            <div class="activity-panel-header">
+                <span>Activity Log</span>
+                <button class="modal-close" @onclick="() => showPanel = false">&#x2715;</button>
+            </div>
+            <div class="activity-panel-body">
+                @if (entries.Count == 0)
+                {
+                    <div class="activity-empty">No recent activity</div>
+                }
                 @foreach (var entry in entries)
                 {
-                    <div class="activity-entry @entry.Status.ToString().ToLower()">
+                    <div class="activity-entry @entry.Status.ToString().ToLowerInvariant()">
                         <span class="activity-icon">
                             @switch (entry.Status)
                             {
@@ -56,7 +55,7 @@
                             }
                             @if (entry.Duration.HasValue)
                             {
-                                <span class="activity-duration">@FormatDuration(entry.Duration.Value)</span>
+                                <span class="activity-duration">@UiFormat.Duration(entry.Duration.Value)</span>
                             }
                             @if (!string.IsNullOrEmpty(entry.ResultMessage))
                             {
@@ -69,35 +68,38 @@
                         </span>
                     </div>
                 }
-            }
+            </div>
         </div>
-    </div>
+    }
 }
 
 @code {
+    // Null on hosts without file system access: there is nothing to log there.
+    private ActivityLogService? activityLog;
     private bool showPanel;
     private int runningCount;
     private List<ActivityEntry> entries = new();
 
     protected override void OnInitialized()
     {
-        ActivityLog.OnChanged += OnActivityChanged;
+        if (!Capabilities.HasFileSystemAccess) return;
+
+        activityLog = Services.GetRequiredService<ActivityLogService>();
+        activityLog.OnChanged += OnActivityChanged;
         Refresh();
     }
 
-    private void OnActivityChanged()
+    // Raised from whatever thread ran the operation.
+    private void OnActivityChanged() => _ = InvokeAsync(() =>
     {
-        InvokeAsync(() =>
-        {
-            Refresh();
-            StateHasChanged();
-        });
-    }
+        Refresh();
+        StateHasChanged();
+    });
 
     private void Refresh()
     {
-        entries = ActivityLog.Entries.ToList();
-        runningCount = ActivityLog.RunningCount;
+        entries = activityLog!.Entries.ToList();
+        runningCount = activityLog.RunningCount;
     }
 
     private void TogglePanel()
@@ -106,20 +108,9 @@
         if (showPanel) Refresh();
     }
 
-    private void ClosePanel()
-    {
-        showPanel = false;
-    }
-
-    private static string FormatDuration(TimeSpan duration)
-    {
-        if (duration.TotalSeconds < 1) return "< 1s";
-        if (duration.TotalMinutes < 1) return $"{(int)duration.TotalSeconds}s";
-        return $"{(int)duration.TotalMinutes}m{duration.Seconds:D2}s";
-    }
-
     public void Dispose()
     {
-        ActivityLog.OnChanged -= OnActivityChanged;
+        if (activityLog != null)
+            activityLog.OnChanged -= OnActivityChanged;
     }
 }

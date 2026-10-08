@@ -1,0 +1,20 @@
+<div class="modal-overlay" @onclick="OnClose">
+    <div class="modal-content @Size" @onclick:stopPropagation>
+        <div class="modal-header @(IsError ? "modal-header-error" : "")">
+            <h2>@Title</h2>
+            <button class="modal-close" @onclick="OnClose">✕</button>
+        </div>
+        <div class="modal-body">
+            @ChildContent
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    // "", "modal-small" or "modal-large"
+    [Parameter] public string Size { get; set; } = "";
+    [Parameter] public bool IsError { get; set; }
+}

@@ -22,9 +22,9 @@ public class CollectionService
         return await _db.GetCollectionByIdAsync(id);
     }
 
-    public async Task<Collection> CreateAsync(string name, string? description = null, string excludedDirectories = "__MACOSX")
+    public async Task<Collection> CreateAsync(string name, string? description = null, string excludedDirectories = "__MACOSX", IEnumerable<string>? paths = null)
     {
-        return await _db.CreateCollectionAsync(name, description, excludedDirectories);
+        return await _db.CreateCollectionAsync(name, description, excludedDirectories, paths);
     }
 
     public async Task UpdateAsync(int id, string name, string? description, string? excludedDirectories = null)

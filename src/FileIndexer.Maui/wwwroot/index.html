@@ -5,7 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>FileIndexer</title>
     <base href="/" />
-    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="_content/FileIndexer.UI/fileindexer.css" />
+    <link rel="stylesheet" href="css/maui.css" />
+    <script>
+        // Apply the saved theme before first paint (no flash of the dark theme).
+        try { if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light-theme'); } catch (e) { }
+    </script>
 </head>
 <body>
     <div id="app">Loading...</div>
@@ -16,6 +21,7 @@
         <a class="dismiss">Dismiss</a>
     </div>
 
+    <script src="_content/FileIndexer.UI/fileindexer.js"></script>
     <script src="_framework/blazor.webview.js" autostart="false"></script>
     <script>
         window.addEventListener('error', function (e) {
@@ -26,68 +32,6 @@
             var msg = document.getElementById('blazor-error-msg');
             if (msg) msg.textContent = String(e.reason);
         });
-    </script>
-    <script>
-        window.initColumnResize = function (tableSelector) {
-            var table = document.querySelector(tableSelector);
-            if (!table) return;
-            var cols = table.querySelectorAll('th');
-            cols.forEach(function (th) {
-                if (th.querySelector('.col-resize-handle')) return;
-                var handle = document.createElement('div');
-                handle.className = 'col-resize-handle';
-                th.appendChild(handle);
-                var startX, startW, didDrag;
-                handle.addEventListener('click', function (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                });
-                handle.addEventListener('mousedown', function (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    startX = e.pageX;
-                    startW = th.offsetWidth;
-                    didDrag = false;
-                    document.body.style.cursor = 'col-resize';
-                    document.body.style.userSelect = 'none';
-                    var onMove = function (e2) {
-                        didDrag = true;
-                        var w = startW + (e2.pageX - startX);
-                        if (w > 30) th.style.width = w + 'px';
-                    };
-                    var onUp = function () {
-                        document.body.style.cursor = '';
-                        document.body.style.userSelect = '';
-                        document.removeEventListener('mousemove', onMove);
-                        document.removeEventListener('mouseup', onUp);
-                    };
-                    document.addEventListener('mousemove', onMove);
-                    document.addEventListener('mouseup', onUp);
-                });
-            });
-        };
-        window.adjustContextMenu = function () {
-            var menu = document.querySelector('.context-menu');
-            if (!menu) return;
-            var rect = menu.getBoundingClientRect();
-            var margin = 8;
-            if (rect.bottom > window.innerHeight - margin) {
-                menu.style.top = Math.max(margin, window.innerHeight - rect.height - margin) + 'px';
-            }
-            if (rect.right > window.innerWidth - margin) {
-                menu.style.left = Math.max(margin, window.innerWidth - rect.width - margin) + 'px';
-            }
-        };
-        window.themeInterop = {
-            setTheme: function (theme) {
-                var root = document.documentElement;
-                root.classList.remove('light-theme', 'dark-theme');
-                if (theme) root.classList.add(theme);
-            },
-            getSystemTheme: function () {
-                return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-            }
-        };
     </script>
 </body>
 </html>

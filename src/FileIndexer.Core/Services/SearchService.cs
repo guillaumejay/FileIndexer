@@ -30,11 +30,12 @@ public class SearchService
         IEnumerable<int>? collectionIds = null,
         IEnumerable<string>? extensionFilter = null,
         string? directoryFilter = null,
-        bool? showDirectories = null)
+        bool? showDirectories = null,
+        CancellationToken cancellationToken = default)
     {
         _logger.LogDebug("Search with sort: {Query}, {Column} {Direction}, Collections: {Collections}, Directory: {Directory}",
             query, sortColumn, sortDirection, collectionIds != null ? string.Join(",", collectionIds) : "all", directoryFilter ?? "all");
-        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset, collectionIds, extensionFilter, directoryFilter, showDirectories);
+        return await _db.SearchWithSortAsync(query, sortColumn, sortDirection, limit, offset, collectionIds, extensionFilter, directoryFilter, showDirectories, cancellationToken);
     }
 
     public async Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)

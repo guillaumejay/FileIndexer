@@ -7,14 +7,32 @@ namespace FileIndexer.Data;
 
 public class IndexDbContext : IDisposable
 {
-    private readonly string _connectionString;
+    private volatile string _connectionString = "";
 
     // For in-memory databases, a single keep-alive connection must stay open for the
     // lifetime of the context, otherwise the shared-cache in-memory DB is destroyed as
     // soon as the last connection closes. Null for file-based databases.
-    private readonly SqliteConnection? _keepAlive;
+    private SqliteConnection? _keepAlive;
 
     public IndexDbContext(string dbPath = "fileindex.db")
+    {
+        Open(dbPath);
+    }
+
+    public string DatabasePath { get; private set; } = "";
+
+    // Points the context at another database file. Every operation opens its own connection,
+    // so callers holding this context switch over on their next call.
+    public void SwitchTo(string dbPath)
+    {
+        var previousKeepAlive = _keepAlive;
+        Open(dbPath);
+        previousKeepAlive?.Dispose();
+        // Release pooled handles on the previous file so it can be replaced or deleted.
+        SqliteConnection.ClearAllPools();
+    }
+
+    private void Open(string dbPath)
     {
         var inMemory = string.IsNullOrWhiteSpace(dbPath) || dbPath == ":memory:";
         if (inMemory)
@@ -24,10 +42,13 @@ public class IndexDbContext : IDisposable
             var name = "fileindexer_" + Guid.NewGuid().ToString("N");
             _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared";
             _keepAlive = CreateConnection();
+            DatabasePath = ":memory:";
         }
         else
         {
-            _connectionString = $"Data Source={dbPath}";
+            _connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString();
+            _keepAlive = null;
+            DatabasePath = dbPath;
         }
 
         InitializeDatabase();

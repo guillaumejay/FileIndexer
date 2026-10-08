@@ -1,18 +1,13 @@
 namespace FileIndexer.Models;
 
+// Portable description of the collections. Host settings (database path, scan tuning) live in
+// each host's own configuration and are not exported; older files carrying a "settings" block
+// still import, the block is ignored.
 public class ConfigExport
 {
     public int Version { get; set; } = 1;
     public DateTime ExportedAtUtc { get; set; }
-    public ExportedSettings? Settings { get; set; }
     public List<ExportedCollection> Collections { get; set; } = new();
-}
-
-public class ExportedSettings
-{
-    public string DefaultScanPath { get; set; } = "";
-    public int ScanParallelism { get; set; } = 64;
-    public int ScanBatchSize { get; set; } = 500;
 }
 
 public class ExportedCollection

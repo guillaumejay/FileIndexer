@@ -21,14 +21,13 @@ public class ConfigExportService
         _db = db;
     }
 
-    public async Task<ConfigExport> BuildExportAsync(ExportedSettings? settings = null)
+    public async Task<ConfigExport> BuildExportAsync()
     {
         var collections = await _db.GetCollectionsAsync();
 
         var export = new ConfigExport
         {
             ExportedAtUtc = DateTime.UtcNow,
-            Settings = settings,
             Collections = collections.Select(c => new ExportedCollection
             {
                 Name = c.Name,

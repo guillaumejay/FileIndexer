@@ -12,10 +12,10 @@ This file defines the specialized AI agent roles and responsibilities for the Fi
   - Ensure high-performance search in `SearchService.cs`.
 
 ## 🌐 Web/Frontend Specialist
-**Focus:** `FileIndexer.Web`
+**Focus:** `FileIndexer.UI` (shared components) & `FileIndexer.Web`
 - **Domain:** Blazor Server, Interactive SSR, CSS, UI/UX.
 - **Responsibilities:**
-  - Develop and maintain Blazor components in `Components/`.
+  - Develop and maintain the shared Blazor components in `src/FileIndexer.UI/Components/` (used by both hosts; never duplicate them in a host).
   - Ensure real-time UI updates for scan progress.
   - Implement responsive design and modern aesthetics.
   - Maintain `AppSettings.cs` and `appsettings.json` configurations.
@@ -24,7 +24,7 @@ This file defines the specialized AI agent roles and responsibilities for the Fi
 **Focus:** `FileIndexer.Maui` & `FileIndexer.Desktop`
 - **Domain:** .NET MAUI, cross-platform UI, platform-native services.
 - **Responsibilities:**
-  - Synchronize features between Web and MAUI implementations.
+  - Keep host-specific code thin: platform differences go through `PlatformCapabilities` and host services (`INativeFolderPicker`, `IConfigFileExchange`).
   - Implement platform-specific logic (e.g., `WindowsTrashService`, `LinuxTrashService`).
   - Optimize the mobile touch-friendly UI.
   - Manage multi-project shared services and data models.

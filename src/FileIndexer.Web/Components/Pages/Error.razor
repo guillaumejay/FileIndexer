@@ -1,0 +1,21 @@
+@page "/Error"
+@using System.Diagnostics
+@using Microsoft.AspNetCore.Http
+
+@* Target of UseExceptionHandler outside Development. Rendered statically (no interactivity). *@
+<PageTitle>Error</PageTitle>
+
+<div class="error-panel">
+    <h2>An error occurred while processing your request.</h2>
+    @if (RequestId != null)
+    {
+        <p>Request ID: <code>@RequestId</code></p>
+    }
+    <a class="btn-primary" href="/">Back to File Indexer</a>
+</div>
+
+@code {
+    [CascadingParameter] private HttpContext? HttpContext { get; set; }
+
+    private string? RequestId => Activity.Current?.Id ?? HttpContext?.TraceIdentifier;
+}

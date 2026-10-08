@@ -1,59 +1,41 @@
-using System.Runtime.InteropServices;
 using FileIndexer;
 using FileIndexer.Components;
 using FileIndexer.Data;
-using FileIndexer.Services;
+using FileIndexer.UI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Configuration
 var appSettings = builder.Configuration.GetSection("AppSettings").Get<AppSettings>() ?? new AppSettings();
+var databasePath = ResolveDatabasePath(appSettings.DatabasePath, builder.Environment.ContentRootPath);
 
 // Services
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddSingleton(appSettings);
-var databasePath = ResolveDatabasePath(appSettings.DatabasePath, builder.Environment.ContentRootPath);
-builder.Services.AddSingleton(sp => new IndexDbContext(databasePath));
-builder.Services.AddSingleton<FileScannerService>();
-builder.Services.AddScoped<SearchService>();
-builder.Services.AddScoped<CollectionService>();
-builder.Services.AddScoped<ConfigExportService>();
-builder.Services.AddSingleton<BuildInfoService>();
-
-// Platform-specific services
-// Use FallbackFolderPicker on all platforms (custom UI in browser)
-builder.Services.AddSingleton<IFolderPickerService, FallbackFolderPicker>();
-
-if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-{
-    builder.Services.AddSingleton<ITrashService, WindowsTrashService>();
-}
-else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-{
-    builder.Services.AddSingleton<ITrashService, MacTrashService>();
-}
-else
-{
-    builder.Services.AddSingleton<ITrashService, LinuxTrashService>();
-}
-
-builder.Services.AddSingleton<FileOperationsService>();
-builder.Services.AddSingleton<ActivityLogService>();
-builder.Services.AddSingleton<ArchiveService>();
+// The server runs on the machine that holds the files: full file system access. Folder
+// picking uses the in-page browser, config files go through browser download/upload.
+builder.Services.AddFileIndexer(
+    _ => new IndexDbContext(databasePath),
+    new PlatformCapabilities { HasFileSystemAccess = true },
+    scanner =>
+    {
+        scanner.DegreeOfParallelism = appSettings.ScanParallelism;
+        scanner.BatchSize = appSettings.ScanBatchSize;
+    });
+builder.Services.AddScoped<IConfigFileExchange, JsConfigFileExchange>();
 
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
 {
-    app.UseExceptionHandler("/Error");
+    app.UseExceptionHandler("/Error", createScopeForErrors: true);
     app.UseHsts();
 }
 
-app.UseStaticFiles();
 app.UseAntiforgery();
 
+app.MapStaticAssets();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

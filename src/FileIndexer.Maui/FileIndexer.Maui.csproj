@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk.Razor">
+<Project Sdk="Microsoft.NET.Sdk.Razor">
 
   <PropertyGroup>
     <!-- Base framework for all -->
@@ -46,12 +46,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\FileIndexer.Core\FileIndexer.Core.csproj" />
-  </ItemGroup>
-
-  <!-- Desktop-only: reference FileIndexer.Desktop for full features on Windows/macOS -->
-  <ItemGroup Condition="$(TargetFramework.Contains('windows')) Or $(TargetFramework.Contains('maccatalyst'))">
-    <ProjectReference Include="..\FileIndexer.Desktop\FileIndexer.Desktop.csproj" />
+    <!-- Shared Blazor UI (brings Core and Desktop; desktop features are switched on at runtime) -->
+    <ProjectReference Include="..\FileIndexer.UI\FileIndexer.UI.csproj" />
   </ItemGroup>
 
   <ItemGroup>

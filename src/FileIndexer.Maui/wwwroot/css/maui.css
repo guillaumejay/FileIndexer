@@ -1,0 +1,32 @@
+/* MAUI host additions on top of _content/FileIndexer.UI/fileindexer.css */
+
+/* Native-app feel: no text selection outside inputs. */
+body {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+input, textarea {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* Blazor's built-in error banner */
+#blazor-error-ui {
+    background: var(--danger);
+    color: white;
+    bottom: 0;
+    display: none;
+    left: 0;
+    padding: 0.6rem 1.25rem;
+    position: fixed;
+    width: 100%;
+    z-index: 1000;
+}
+
+#blazor-error-ui .dismiss {
+    cursor: pointer;
+    position: absolute;
+    right: 0.75rem;
+    top: 0.5rem;
+}

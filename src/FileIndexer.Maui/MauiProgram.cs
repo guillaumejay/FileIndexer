@@ -1,12 +1,8 @@
 using CommunityToolkit.Maui;
 using FileIndexer.Data;
-using FileIndexer.Services;
 using FileIndexer.Maui.Services;
+using FileIndexer.UI.Services;
 using Microsoft.Extensions.Logging;
-
-#if DESKTOP
-using System.Runtime.InteropServices;
-#endif
 
 namespace FileIndexer.Maui;
 
@@ -41,55 +37,22 @@ public static class MauiProgram
         builder.Logging.AddDebug();
 #endif
 
-        // Database path service
-        builder.Services.AddSingleton<DatabasePathService>();
-
-        // Core services
-        builder.Services.AddSingleton<IndexDbContext>(sp =>
-        {
-            var dbPathService = sp.GetRequiredService<DatabasePathService>();
-            var dbPath = dbPathService.GetDatabasePath();
-            return new IndexDbContext(dbPath ?? ":memory:");
-        });
-
-        builder.Services.AddScoped<SearchService>();
-        builder.Services.AddScoped<CollectionService>();
-        builder.Services.AddScoped<ConfigExportService>();
-        builder.Services.AddSingleton<BuildInfoService>();
+        builder.Services.AddSingleton<DatabaseManager>();
+        builder.Services.AddSingleton<IConfigFileExchange, MauiConfigFileExchange>();
 
 #if DESKTOP
-        // Desktop-only services (Windows/macOS)
-        RegisterDesktopServices(builder.Services);
+        // Windows/macOS: the indexed folders are reachable, so indexing and file operations are on.
+        var capabilities = new PlatformCapabilities { HasFileSystemAccess = true };
+        builder.Services.AddSingleton<INativeFolderPicker, MauiFolderPicker>();
+#else
+        // Phones/tablets browse a synced copy of the index.
+        var capabilities = new PlatformCapabilities { HasFileSystemAccess = false, IsTouch = true };
 #endif
 
-        // Platform-specific folder picker
-        builder.Services.AddSingleton<IMauiFolderPickerService, MauiFolderPickerService>();
+        builder.Services.AddFileIndexer(
+            sp => new IndexDbContext(sp.GetRequiredService<DatabaseManager>().StartupPath),
+            capabilities);
 
         return builder.Build();
     }
-
-#if DESKTOP
-    private static void RegisterDesktopServices(IServiceCollection services)
-    {
-        // File scanner for indexing
-        services.AddSingleton<FileScannerService>();
-
-        // File operations
-        services.AddSingleton<FileOperationsService>();
-
-        // Activity log & archive services
-        services.AddSingleton<ActivityLogService>();
-        services.AddSingleton<ArchiveService>();
-
-        // Platform-specific trash service
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            services.AddSingleton<ITrashService, WindowsTrashService>();
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            services.AddSingleton<ITrashService, MacTrashService>();
-        }
-    }
-#endif
 }
