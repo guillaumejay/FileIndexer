@@ -75,8 +75,7 @@ public class TrashServiceTests
         var svc = new LinuxTrashService();
 
         // Only the unsupported path is deterministic off-Linux (and on Linux without trash-cli).
-        // Where trash-cli is present we cannot assert the failure branch, so skip the assertion.
-        if (svc.IsSupported) return;
+        Assert.SkipWhen(svc.IsSupported, "trash-cli is installed; failure branch not reachable.");
 
         var result = await svc.MoveToTrashAsync("/tmp/whatever");
 
@@ -85,12 +84,15 @@ public class TrashServiceTests
     }
 }
 
-// Skips at runtime when not running on Windows (xunit v2 honours Skip set in the ctor).
+// Skips at runtime when not running on Windows, via xunit v3's native conditional skip.
 public sealed class WindowsOnlyFactAttribute : FactAttribute
 {
+    public static bool IsWindows => OperatingSystem.IsWindows();
+
     public WindowsOnlyFactAttribute()
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            Skip = "Windows-only trash backend.";
+        Skip = "Windows-only trash backend.";
+        SkipUnless = nameof(IsWindows);
+        SkipType = typeof(WindowsOnlyFactAttribute);
     }
 }
