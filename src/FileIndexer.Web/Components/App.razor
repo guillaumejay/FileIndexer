@@ -5,15 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <link rel="stylesheet" href="@Assets["_content/FileIndexer.UI/fileindexer.css"]" />
-    <script>
-        // Apply the saved theme before first paint (no flash of the dark theme).
-        try { if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light-theme'); } catch (e) { }
-    </script>
+    <script src="@Assets["_content/FileIndexer.UI/fileindexer.js"]"></script>
+    <script>fileIndexer.applyStoredTheme();</script>
     <HeadOutlet />
 </head>
 <body>
     <Routes />
-    <script src="@Assets["_content/FileIndexer.UI/fileindexer.js"]"></script>
     <script src="_framework/blazor.web.js"></script>
 </body>
 </html>

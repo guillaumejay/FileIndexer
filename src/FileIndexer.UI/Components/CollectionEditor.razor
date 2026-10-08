@@ -1,4 +1,5 @@
 @inject CollectionService CollectionService
+@inject UiFeedback Feedback
 
 <Modal Title="@(isNew ? "New Collection" : "Edit Collection")" OnClose="OnCancel">
     <div class="form-group">
@@ -64,18 +65,15 @@
     </div>
 </Modal>
 
-<Dialogs @ref="dialogs" />
-
 @code {
     [Parameter] public Collection? Collection { get; set; }
     [Parameter] public EventCallback OnSave { get; set; }
     [Parameter] public EventCallback OnCancel { get; set; }
 
-    private Dialogs dialogs = default!;
     private bool isNew => Collection == null;
     private string name = "";
     private string? description;
-    private string excludedDirectories = "__MACOSX";
+    private string excludedDirectories = FileIndexer.Models.Collection.DefaultExcludedDirectories;
     private List<CollectionPath> paths = new();
     private List<int> removedPathIds = new();
     private string newPath = "";
@@ -87,7 +85,7 @@
     {
         name = Collection?.Name ?? "";
         description = Collection?.Description;
-        excludedDirectories = Collection?.ExcludedDirectories ?? "__MACOSX";
+        excludedDirectories = Collection?.ExcludedDirectories ?? FileIndexer.Models.Collection.DefaultExcludedDirectories;
         paths = Collection?.Paths.ToList() ?? new();
         removedPathIds = new();
         newPath = "";
@@ -135,7 +133,7 @@
 
     private async Task Browse()
     {
-        var picked = await dialogs.PickFolderAsync(string.IsNullOrWhiteSpace(newPath) ? null : newPath);
+        var picked = await Feedback.PickFolderAsync(string.IsNullOrWhiteSpace(newPath) ? null : newPath);
         if (picked != null)
         {
             newPath = picked;

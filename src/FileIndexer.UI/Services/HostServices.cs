@@ -1,7 +1,7 @@
 namespace FileIndexer.UI.Services;
 
-// Native dialogs a host may provide. Hosts that register none fall back to the in-page
-// folder browser and to browser downloads/uploads (JsHostDialogs).
+// Native dialogs a host may provide. Without INativeFolderPicker the in-page folder browser is
+// used; IConfigFileExchange defaults to browser download/upload (JsConfigFileExchange).
 public interface INativeFolderPicker
 {
     Task<string?> PickFolderAsync();

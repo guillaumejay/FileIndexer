@@ -21,5 +21,6 @@ public static class UiFormat
         return $"{(int)duration.TotalMinutes}m{duration.Seconds:D2}s";
     }
 
-    public static string Items(int count) => count == 1 ? "1 item" : $"{count:N0} items";
+    // "1 archive", "3 archives"
+    public static string Count(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count:N0} {noun}s";
 }

@@ -6,7 +6,9 @@ namespace FileIndexer.Services;
 
 public class ArchiveService
 {
-    private static readonly HashSet<string> ArchiveExtensions = new(StringComparer.OrdinalIgnoreCase)
+    // Lower-case, as stored in the index (also used as the "Archives" search filter).
+    // .tar.gz and friends are covered by their last extension.
+    public static readonly IReadOnlySet<string> Extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz"
     };
@@ -18,25 +20,7 @@ public class ArchiveService
         _logger = logger;
     }
 
-    public static bool IsArchive(string fileName)
-    {
-        var ext = Path.GetExtension(fileName);
-        if (ArchiveExtensions.Contains(ext))
-            return true;
-
-        // Handle double extensions like .tar.gz
-        if (ext.Equals(".gz", StringComparison.OrdinalIgnoreCase) ||
-            ext.Equals(".bz2", StringComparison.OrdinalIgnoreCase) ||
-            ext.Equals(".xz", StringComparison.OrdinalIgnoreCase))
-        {
-            var withoutExt = Path.GetFileNameWithoutExtension(fileName);
-            var innerExt = Path.GetExtension(withoutExt);
-            if (innerExt.Equals(".tar", StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-
-        return false;
-    }
+    public static bool IsArchive(string fileName) => Extensions.Contains(Path.GetExtension(fileName));
 
     public async Task<ArchiveExtractResult> ExtractSmartAsync(string archivePath, CancellationToken cancellationToken = default)
     {
@@ -94,14 +78,10 @@ public class ArchiveService
                         continue;
 
                     // Security: prevent path traversal. Resolve the entry against the extraction
-                    // dir and require it to stay strictly inside. The trailing separator stops a
-                    // sibling like "extract-evil" from matching the prefix of "extract".
+                    // dir and require it to stay strictly inside (a sibling like "extract-evil"
+                    // does not count as inside "extract").
                     var fullDest = Path.GetFullPath(Path.Combine(extractDir, entry.Key!));
-                    var fullExtractDir = Path.GetFullPath(extractDir);
-                    var extractDirPrefix = fullExtractDir.EndsWith(Path.DirectorySeparatorChar)
-                        ? fullExtractDir
-                        : fullExtractDir + Path.DirectorySeparatorChar;
-                    if (!fullDest.StartsWith(extractDirPrefix, StringComparison.OrdinalIgnoreCase))
+                    if (!PathHelper.IsStrictlyUnder(fullDest, Path.GetFullPath(extractDir)))
                     {
                         _logger.LogWarning(
                             "Skipped archive entry escaping the extraction directory (path traversal): {Entry} in {Archive}",

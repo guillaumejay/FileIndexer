@@ -10,13 +10,17 @@ public static class PathHelper
 
     // True when path is root itself or lies below it. The separator stops "C:\data2" from
     // matching the root "C:\data".
-    public static bool IsSameOrUnder(string path, string root)
+    public static bool IsSameOrUnder(string path, string root) => AreSame(path, root) || IsStrictlyUnder(path, root);
+
+    // True when path lies below root (root itself excluded).
+    public static bool IsStrictlyUnder(string path, string root) =>
+        TrimEnd(path).StartsWith(WithTrailingSeparator(root), Comparison);
+
+    // "C:\data" and "C:\data\" -> "C:\data\": the prefix shared by everything inside a folder.
+    public static string WithTrailingSeparator(string path)
     {
-        var trimmedPath = TrimEnd(path);
-        var trimmedRoot = TrimEnd(root);
-        var prefix = trimmedRoot.EndsWith(Path.DirectorySeparatorChar) ? trimmedRoot : trimmedRoot + Path.DirectorySeparatorChar;
-        return string.Equals(trimmedPath, trimmedRoot, Comparison)
-            || trimmedPath.StartsWith(prefix, Comparison);
+        var trimmed = TrimEnd(path);
+        return trimmed.EndsWith(Path.DirectorySeparatorChar) ? trimmed : trimmed + Path.DirectorySeparatorChar;
     }
 
     // "name (1).ext", "name (2).ext", ... until nothing exists at that path. Folder names keep

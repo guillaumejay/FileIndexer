@@ -30,15 +30,7 @@ else
 
     private async Task SelectDatabase()
     {
-        error = null;
-        try
-        {
-            await Databases.SelectAsync(Db);
-        }
-        catch (Exception ex)
-        {
-            error = $"Cannot open the database: {ex.Message}";
-        }
+        (_, error) = await Databases.SelectAsync(Db);
     }
 
     public void Dispose() => Databases.Changed -= OnDatabaseChanged;

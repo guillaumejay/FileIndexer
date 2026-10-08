@@ -8,7 +8,9 @@ public class Collection
     public DateTime CreatedAtUtc { get; set; }
 
     public List<CollectionPath> Paths { get; set; } = new();
-    public string ExcludedDirectories { get; set; } = "__MACOSX";
+    public const string DefaultExcludedDirectories = "__MACOSX";
+
+    public string ExcludedDirectories { get; set; } = DefaultExcludedDirectories;
 
     // Stats (populated separately)
     public int FileCount { get; set; }

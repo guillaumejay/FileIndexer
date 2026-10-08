@@ -20,11 +20,6 @@ public class FileOperationsService
         _logger = logger;
     }
 
-    public async Task<IEnumerable<IndexedFile>> GetFilesByIdsAsync(IEnumerable<long> ids)
-    {
-        return await _db.GetFilesByIdsAsync(ids);
-    }
-
     public Task<OperationResult> OpenFileAsync(string path)
     {
         if (!Path.Exists(path))
@@ -257,13 +252,14 @@ public class FileOperationsService
             await TrashExistingAsync(destPath);
         }
 
-        if (string.Equals(Path.GetPathRoot(item.Path), Path.GetPathRoot(destPath), StringComparison.OrdinalIgnoreCase))
+        try
         {
             Directory.Move(item.Path, destPath);
         }
-        else
+        catch (IOException) when (Directory.Exists(item.Path) && !Path.Exists(destPath))
         {
-            // Directory.Move cannot cross volumes: copy, then remove the source.
+            // Directory.Move cannot cross volumes (path roots say nothing about mount points on
+            // Unix): copy, then remove the source.
             await Task.Run(() => CopyDirectory(item.Path, destPath));
             Directory.Delete(item.Path, recursive: true);
         }
@@ -430,31 +426,10 @@ public class FileOperationsService
     // failed (items missing on disk are skipped, not failures), otherwise an aggregated error.
     private OperationResult BuildBatchResult(string operationLabel, int succeeded, int skipped, List<FileOperationError> errors)
     {
-        if (errors.Count == 0)
-        {
-            _logger.LogInformation(
-                "Completed {Operation}: {Succeeded} succeeded, {Skipped} skipped.",
-                operationLabel, succeeded, skipped);
-            return new OperationResult
-            {
-                IsSuccess = true,
-                SuccessCount = succeeded,
-                SkippedCount = skipped
-            };
-        }
-
-        var message = $"Échec de {operationLabel} pour {errors.Count} élément(s) sur {succeeded + errors.Count} ; voir les journaux.";
-        _logger.LogWarning(
-            "Completed {Operation} with errors: {Succeeded} succeeded, {Skipped} skipped, {Failed} failed.",
+        _logger.Log(errors.Count == 0 ? LogLevel.Information : LogLevel.Warning,
+            "Completed {Operation}: {Succeeded} succeeded, {Skipped} skipped, {Failed} failed.",
             operationLabel, succeeded, skipped, errors.Count);
-        return new OperationResult
-        {
-            IsSuccess = false,
-            ErrorMessage = message,
-            SuccessCount = succeeded,
-            SkippedCount = skipped,
-            Errors = errors
-        };
+        return OperationResult.FromBatch(operationLabel, succeeded, skipped, errors);
     }
 }
 
@@ -478,6 +453,19 @@ public class OperationResult
     public static OperationResult Success() => new() { IsSuccess = true };
     public static OperationResult Failure(string message) => new() { IsSuccess = false, ErrorMessage = message };
     public static OperationResult Cancelled() => new() { IsSuccess = false, IsCancelled = true };
+
+    // Success when nothing failed (skipped items are not failures), otherwise an aggregated error.
+    public static OperationResult FromBatch(string operationLabel, int succeeded, int skipped, IReadOnlyList<FileOperationError> errors) => new()
+    {
+        IsSuccess = errors.Count == 0,
+        ErrorMessage = errors.Count == 0
+            ? null
+            : $"Échec de {operationLabel} pour {errors.Count} élément(s) sur {succeeded + errors.Count} : "
+              + string.Join("; ", errors.Take(5).Select(e => $"{Path.GetFileName(e.Path)} ({e.Message})")),
+        SuccessCount = succeeded,
+        SkippedCount = skipped,
+        Errors = errors
+    };
 }
 
 /// <summary>A single item-level failure inside a batch operation.</summary>

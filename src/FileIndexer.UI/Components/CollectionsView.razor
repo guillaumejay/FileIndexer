@@ -1,6 +1,7 @@
 @inject CollectionService CollectionSvc
 @inject ConfigExportService ConfigExportSvc
-@inject PlatformCapabilities Capabilities
+@inject IConfigFileExchange FileExchange
+@inject UiFeedback Feedback
 @inject IServiceProvider Services
 @inject ILogger<CollectionsView> Logger
 @implements IDisposable
@@ -8,32 +9,32 @@
 <div class="view-container">
     <div class="collections-header">
         <div class="collections-header-actions">
-            @if (CanEdit)
+            @if (fs != null)
             {
                 <button class="btn-secondary" @onclick="ReindexAll" disabled="@IsScanning" title="Reindex all collections">Reindex all</button>
             }
             <button class="btn-secondary" @onclick="ExportConfig" title="Export configuration">Export</button>
-            @if (CanEdit)
+            @if (fs != null)
             {
                 <button class="btn-secondary" @onclick="ImportConfig" title="Import configuration">Import</button>
             }
         </div>
-        @if (CanEdit)
+        @if (fs != null)
         {
             <button class="btn-primary" @onclick="() => OpenEditor(null)">+ New Collection</button>
         }
     </div>
 
     <div class="collections-content">
-        @if (collections == null)
+        @if (Collections == null)
         {
             <div class="loading">Loading...</div>
         }
-        else if (collections.Count == 0)
+        else if (Collections.Count == 0)
         {
             <div class="empty-state">
                 <p>No collections yet. Create one to start organizing your indexed files.</p>
-                @if (CanEdit)
+                @if (fs != null)
                 {
                     <button class="btn-primary" @onclick="() => OpenEditor(null)">Create your first collection</button>
                 }
@@ -42,13 +43,13 @@
         else
         {
             <div class="collection-grid">
-                @foreach (var collection in collections)
+                @foreach (var collection in Collections)
                 {
                     var isScanningThis = ScanningCollectionId == collection.Id;
                     <div class="collection-card @(isScanningThis ? "scanning" : pendingReindexIds.Contains(collection.Id) ? "pending" : "")">
                         <div class="collection-header">
                             <h3>@collection.Name</h3>
-                            @if (CanEdit)
+                            @if (fs != null)
                             {
                                 <div class="collection-actions">
                                     <button class="btn-icon-sm" @onclick="() => IndexAsync(collection)" disabled="@(IsScanning || collection.Paths.Count == 0)" title="Index">
@@ -96,7 +97,7 @@
                                     <div class="progress-bar" style="width: @(Math.Min(progress.ProgressPercent, 100).ToString("F0", System.Globalization.CultureInfo.InvariantCulture))%"></div>
                                 </div>
                                 <div class="progress-text">
-                                    @progress.FilesScanned.ToString("N0") files | @progress.Elapsed.ToString(@"mm\:ss")
+                                    @progress.FilesScanned.ToString("N0") files | @UiFormat.Duration(progress.Elapsed)
                                 </div>
                             </div>
                         }
@@ -120,7 +121,7 @@
 
 @if (importData != null)
 {
-    <Modal Title="Import Configuration" Size="modal-large" OnClose="CancelImport">
+    <Modal Title="Import Configuration" Size="modal-large" OnClose="() => importData = null">
         <p><strong>@importData.Collections.Count</strong> collection(s) found in file.</p>
         @if (importHasCollisions)
         {
@@ -133,7 +134,7 @@
             </div>
         }
         <div class="modal-actions">
-            <button class="btn-secondary" @onclick="CancelImport">Cancel</button>
+            <button class="btn-secondary" @onclick="() => importData = null">Cancel</button>
             <button class="btn-primary" @onclick="DoImport">Import</button>
         </div>
     </Modal>
@@ -183,28 +184,22 @@
     </Modal>
 }
 
-<Dialogs @ref="dialogs" />
-<Toast @ref="toast" />
-
 @code {
+    // Owned by the shell; null while loading. Changes are reported through OnCollectionsChanged
+    // and come back as a new list.
+    [Parameter] public List<Collection>? Collections { get; set; }
     [Parameter] public EventCallback OnCollectionsChanged { get; set; }
 
-    private Dialogs dialogs = default!;
-    private Toast toast = default!;
+    // Null on hosts without file system access: collections are read-only there.
+    private FileSystemFeatures? fs;
 
-    // Desktop services; null on hosts without file system access (collections are read-only there).
-    private FileScannerService? scanner;
-    private FileOperationsService? fileOps;
-    private ActivityLogService? activityLog;
-    private bool CanEdit => scanner != null;
-
-    private List<Collection>? collections;
     private bool showEditor;
     private Collection? editingCollection;
 
     // The scanner is shared by every session: its state, not a local flag, says what is running.
     private ScanProgress? progress;
-    private bool IsScanning => scanner?.IsRunning == true;
+    private ScanProgress? lastFinished;
+    private bool IsScanning => fs?.Scanner.IsRunning == true;
     private int? ScanningCollectionId => IsScanning ? progress?.CollectionId : null;
     private HashSet<int> pendingReindexIds = new();
 
@@ -215,49 +210,31 @@
 
     private EmptyFolderCleanResult? cleanResult;
 
-    protected override async Task OnInitializedAsync()
+    protected override void OnInitialized()
     {
-        if (Capabilities.HasFileSystemAccess)
+        fs = Services.GetService<FileSystemFeatures>();
+        if (fs != null)
         {
-            scanner = Services.GetRequiredService<FileScannerService>();
-            fileOps = Services.GetRequiredService<FileOperationsService>();
-            activityLog = Services.GetRequiredService<ActivityLogService>();
-            progress = scanner.CurrentProgress;
-            scanner.OnProgressChanged += OnProgressChanged;
-        }
-        await LoadCollections();
-    }
-
-    private async Task LoadCollections()
-    {
-        try
-        {
-            collections = await CollectionSvc.GetAllAsync();
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "Failed to load collections");
-            collections = new();
-            toast.Show($"Cannot load collections: {ex.Message}", error: true);
+            progress = fs.Scanner.CurrentProgress;
+            if (!fs.Scanner.IsRunning) lastFinished = progress;
+            fs.Scanner.OnProgressChanged += OnProgressChanged;
         }
     }
 
-    private async Task NotifyChangedAsync()
-    {
-        await LoadCollections();
-        await OnCollectionsChanged.InvokeAsync();
-    }
-
-    // Raised from the scanner threads, possibly for a scan started by another session.
+    // Raised from the scanner threads, possibly for a scan started by another session. The end
+    // of any scan is the single trigger for reloading the collections' stats.
+    // Each scan gets its own ScanProgress (mutated in place while it runs), so "a scan we have
+    // not reported yet is no longer running" detects every end, even of very short scans.
     private void OnProgressChanged(ScanProgress p) => _ = InvokeAsync(async () =>
     {
-        var finished = progress?.IsRunning == true && !p.IsRunning;
+        var finished = !p.IsRunning && !ReferenceEquals(p, lastFinished);
+        if (finished) lastFinished = p;
         progress = p;
+        StateHasChanged();
         if (finished)
         {
-            await LoadCollections();
+            await OnCollectionsChanged.InvokeAsync();
         }
-        StateHasChanged();
     });
 
     private void OpenEditor(Collection? collection)
@@ -275,7 +252,7 @@
     private async Task OnEditorSave()
     {
         CloseEditor();
-        await NotifyChangedAsync();
+        await OnCollectionsChanged.InvokeAsync();
     }
 
     private async Task Delete(Collection collection)
@@ -283,88 +260,55 @@
         var message = collection.FileCount > 0
             ? $"Delete \"{collection.Name}\" and its {collection.FileCount:N0} indexed entries? Files on disk are not touched."
             : $"Delete \"{collection.Name}\"?";
-        if (!await dialogs.ConfirmAsync("Delete Collection", message, "Delete", danger: true)) return;
+        if (!await Feedback.ConfirmAsync("Delete Collection", message, "Delete", danger: true)) return;
 
         try
         {
             await CollectionSvc.DeleteAsync(collection.Id);
-            await NotifyChangedAsync();
+            await OnCollectionsChanged.InvokeAsync();
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Failed to delete collection {Id}", collection.Id);
-            await dialogs.ShowErrorAsync($"Cannot delete the collection: {ex.Message}");
+            await Feedback.ShowErrorAsync($"Cannot delete the collection: {ex.Message}");
         }
     }
 
-    // Runs one scan and records it in the activity log. Returns null when it did not complete.
-    private async Task<ScanProgress?> ScanAsync(Collection collection, Guid? parentActivity = null)
+    // One scan as an activity-log entry. The scan's end event refreshes the collections.
+    private async Task<bool> ScanAsync(Collection collection)
     {
-        var activity = parentActivity == null ? activityLog!.StartActivity($"Indexing \"{collection.Name}\"") : null;
-        try
-        {
-            var result = await scanner!.ScanCollectionAsync(
-                collection.Id, collection.Paths.Select(p => p.Path), excludedDirectories: collection.GetExcludedDirectoryList());
-            if (activity != null)
+        ScanProgress? result = null;
+        var outcome = await Feedback.RunOperationAsync($"Indexing \"{collection.Name}\"", async _ =>
             {
-                activityLog!.CompleteActivity(activity.Id,
-                    $"{result.FilesScanned:N0} entries, {result.FilesRemoved:N0} removed, in {result.Elapsed.TotalSeconds:F1}s");
-            }
-            return result;
-        }
-        catch (Exception ex)
-        {
-            var reason = ex is OperationCanceledException ? "Cancelled" : ex.Message;
-            if (ex is not OperationCanceledException)
-            {
-                Logger.LogError(ex, "Scan of collection {Id} failed", collection.Id);
-            }
-            activityLog!.FailActivity(activity?.Id ?? parentActivity!.Value, reason);
-            toast.Show($"Indexing \"{collection.Name}\" failed: {reason}", error: true);
-            return null;
-        }
+                result = await fs!.Scanner.ScanCollectionAsync(
+                    collection.Id, collection.Paths.Select(p => p.Path), excludedDirectories: collection.GetExcludedDirectoryList());
+                return OperationResult.Success();
+            },
+            () => $"\"{collection.Name}\": {result!.FilesScanned:N0} entries, {result.FilesRemoved:N0} removed in {UiFormat.Duration(result.Elapsed)}");
+        return outcome.IsSuccess;
     }
 
     private async Task IndexAsync(Collection collection)
     {
-        if (IsScanning || collection.Paths.Count == 0) return;
-
-        if (await ScanAsync(collection) != null)
+        if (!IsScanning && collection.Paths.Count > 0)
         {
-            await NotifyChangedAsync();
+            await ScanAsync(collection);
         }
     }
 
     private async Task ReindexAll()
     {
-        if (IsScanning || collections == null) return;
+        if (IsScanning || Collections == null) return;
 
-        var indexable = collections.Where(c => c.Paths.Count > 0).ToList();
-        if (indexable.Count == 0) return;
-
+        var indexable = Collections.Where(c => c.Paths.Count > 0).ToList();
         pendingReindexIds = indexable.Select(c => c.Id).ToHashSet();
-        var activity = activityLog!.StartActivity($"Reindexing all ({indexable.Count} collections)");
-        var totalEntries = 0;
-
         try
         {
-            for (var i = 0; i < indexable.Count; i++)
+            foreach (var collection in indexable)
             {
-                var collection = indexable[i];
-                activityLog.ReportProgress(activity.Id, i + 1, indexable.Count, collection.Name);
                 pendingReindexIds.Remove(collection.Id);
-
-                var result = await ScanAsync(collection, activity.Id);
-                if (result == null) return; // failure already reported on the activity
-                totalEntries += result.FilesScanned;
-
-                // Refresh this collection's card as soon as it finishes.
-                await LoadCollections();
-                StateHasChanged();
+                if (!await ScanAsync(collection)) return;
             }
-
-            activityLog.CompleteActivity(activity.Id, $"{totalEntries:N0} entries across {indexable.Count} collections");
-            await OnCollectionsChanged.InvokeAsync();
         }
         finally
         {
@@ -374,29 +318,18 @@
 
     private async Task CleanEmptyFolders(Collection collection)
     {
-        if (collection.Paths.Count == 0) return;
-
-        var activity = activityLog!.StartActivity($"Cleaning empty folders in \"{collection.Name}\"");
-        try
-        {
-            var result = await fileOps!.CleanEmptyFoldersAsync(collection.Paths.Select(p => p.Path));
-            activityLog.CompleteActivity(activity.Id, $"{result.DeletedFolders.Count} folder(s) deleted");
-
-            if (result.DeletedFolders.Count > 0 || result.ErrorCount > 0)
+        EmptyFolderCleanResult? result = null;
+        var outcome = await Feedback.RunOperationAsync($"Cleaning empty folders in \"{collection.Name}\"", async _ =>
             {
-                cleanResult = result;
-                await NotifyChangedAsync();
-            }
-            else
-            {
-                toast.Show("No empty folders found");
-            }
-        }
-        catch (Exception ex)
+                result = await fs!.Files.CleanEmptyFoldersAsync(collection.Paths.Select(p => p.Path));
+                return OperationResult.Success();
+            },
+            () => result!.DeletedFolders.Count == 0 ? "No empty folders found" : $"{UiFormat.Count(result.DeletedFolders.Count, "empty folder")} deleted");
+
+        if (outcome.IsSuccess && (result!.DeletedFolders.Count > 0 || result.ErrorCount > 0))
         {
-            Logger.LogError(ex, "Cleaning empty folders failed");
-            activityLog.FailActivity(activity.Id, ex.Message);
-            toast.Show($"Error: {ex.Message}", error: true);
+            cleanResult = result;
+            await OnCollectionsChanged.InvokeAsync();
         }
     }
 
@@ -408,17 +341,15 @@
             var fileName = $"fileindexer-config-{DateTime.Now:yyyyMMdd-HHmmss}.json";
             if (await FileExchange.SaveAsync(fileName, ConfigExportSvc.Serialize(export)))
             {
-                toast.Show("Configuration exported");
+                Feedback.ShowToast("Configuration exported");
             }
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Export failed");
-            toast.Show($"Export failed: {ex.Message}", error: true);
+            Feedback.ShowToast($"Export failed: {ex.Message}", error: true);
         }
     }
-
-    private IConfigFileExchange FileExchange => Services.GetRequiredService<IConfigFileExchange>();
 
     private async Task ImportConfig()
     {
@@ -430,23 +361,20 @@
             var data = ConfigExportSvc.Deserialize(json);
             if (data == null || data.Collections.Count == 0)
             {
-                toast.Show("No collections found in file.", error: true);
+                Feedback.ShowToast("No collections found in file.", error: true);
                 return;
             }
 
-            var existingNames = (collections ?? new()).Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            importHasCollisions = data.Collections.Any(c => existingNames.Contains(c.Name));
+            importHasCollisions = await ConfigExportSvc.HasCollisionsAsync(data);
             importStrategy = ImportCollisionStrategy.Skip;
             importData = data;
         }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "Import file could not be read");
-            toast.Show($"Import failed: {ex.Message}", error: true);
+            Feedback.ShowToast($"Import failed: {ex.Message}", error: true);
         }
     }
-
-    private void CancelImport() => importData = null;
 
     private async Task DoImport()
     {
@@ -457,18 +385,18 @@
         try
         {
             importResult = await ConfigExportSvc.ImportCollectionsAsync(data, importStrategy);
-            await NotifyChangedAsync();
+            await OnCollectionsChanged.InvokeAsync();
         }
         catch (Exception ex)
         {
             Logger.LogError(ex, "Import failed");
-            await dialogs.ShowErrorAsync($"Import failed: {ex.Message}");
+            await Feedback.ShowErrorAsync($"Import failed: {ex.Message}");
         }
     }
 
     public void Dispose()
     {
-        if (scanner != null)
-            scanner.OnProgressChanged -= OnProgressChanged;
+        if (fs != null)
+            fs.Scanner.OnProgressChanged -= OnProgressChanged;
     }
 }

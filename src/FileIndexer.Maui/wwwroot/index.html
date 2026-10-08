@@ -7,10 +7,8 @@
     <base href="/" />
     <link rel="stylesheet" href="_content/FileIndexer.UI/fileindexer.css" />
     <link rel="stylesheet" href="css/maui.css" />
-    <script>
-        // Apply the saved theme before first paint (no flash of the dark theme).
-        try { if (localStorage.getItem('theme') === 'light') document.documentElement.classList.add('light-theme'); } catch (e) { }
-    </script>
+    <script src="_content/FileIndexer.UI/fileindexer.js"></script>
+    <script>fileIndexer.applyStoredTheme();</script>
 </head>
 <body>
     <div id="app">Loading...</div>
@@ -21,7 +19,6 @@
         <a class="dismiss">Dismiss</a>
     </div>
 
-    <script src="_content/FileIndexer.UI/fileindexer.js"></script>
     <script src="_framework/blazor.webview.js" autostart="false"></script>
     <script>
         window.addEventListener('error', function (e) {

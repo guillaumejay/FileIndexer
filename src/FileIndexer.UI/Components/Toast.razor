@@ -1,3 +1,5 @@
+@* The session's toast (rendered once, by AppShell). Use it through UiFeedback.ShowToast. *@
+@inject UiFeedback Feedback
 @implements IDisposable
 
 @if (message != null)
@@ -10,9 +12,11 @@
     private bool isError;
     private CancellationTokenSource? hideCts;
 
+    protected override void OnInitialized() => Feedback.Toast = this;
+
     // A new toast replaces the current one and restarts the timer, so overlapping toasts no
     // longer hide each other early.
-    public void Show(string text, bool error = false)
+    internal void Show(string text, bool error = false)
     {
         hideCts?.Cancel();
         var cts = hideCts = new CancellationTokenSource();
@@ -21,23 +25,22 @@
             message = text;
             isError = error;
             StateHasChanged();
-            await HideAfterDelayAsync(cts.Token);
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2.5), cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            message = null;
+            StateHasChanged();
         });
     }
 
-    private async Task HideAfterDelayAsync(CancellationToken token)
+    public void Dispose()
     {
-        try
-        {
-            await Task.Delay(TimeSpan.FromSeconds(2.5), token);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-        message = null;
-        StateHasChanged();
+        if (Feedback.Toast == this) Feedback.Toast = null;
+        hideCts?.Cancel();
     }
-
-    public void Dispose() => hideCts?.Cancel();
 }

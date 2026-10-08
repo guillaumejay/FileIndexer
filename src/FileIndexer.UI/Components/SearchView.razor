@@ -2,6 +2,7 @@
 @inject PlatformCapabilities Capabilities
 @inject IServiceProvider Services
 @inject FileIndexerJs Js
+@inject UiFeedback Feedback
 @inject ILogger<SearchView> Logger
 @implements IDisposable
 
@@ -144,27 +145,23 @@
     <div class="context-menu" style="left: @(contextMenuX)px; top: @(contextMenuY)px;" @onclick:stopPropagation>
         @if (selected.Count == 1)
         {
-            @if (fileOps != null)
+            <div class="context-menu-item" @onclick="FilterBySelectedFolder">Show this folder</div>
+        }
+        <div class="context-menu-item" @onclick="CopySelectedPaths">Copy path</div>
+        @if (fs != null)
+        {
+            <div class="context-menu-separator"></div>
+            @if (selected.Count == 1)
             {
                 <div class="context-menu-item" @onclick="OpenSelected">Open</div>
                 <div class="context-menu-item" @onclick="OpenSelectedFolder">Open folder</div>
-            }
-            <div class="context-menu-item" @onclick="FilterBySelectedFolder">Show this folder</div>
-            @if (fileOps != null)
-            {
                 <div class="context-menu-item" @onclick="StartRename">Rename</div>
             }
-        }
-        @if (archiveSvc != null && selected.Values.Any(f => ArchiveService.IsArchive(f.Name)))
-        {
-            <div class="context-menu-separator"></div>
-            <div class="context-menu-item" @onclick="() => Extract(deleteAfter: false)">Extract</div>
-            <div class="context-menu-item" @onclick="() => Extract(deleteAfter: true)">Extract and delete archive</div>
-        }
-        <div class="context-menu-separator"></div>
-        <div class="context-menu-item" @onclick="CopySelectedPaths">Copy path</div>
-        @if (fileOps != null)
-        {
+            @if (selected.Values.Any(f => ArchiveService.IsArchive(f.Name)))
+            {
+                <div class="context-menu-item" @onclick="() => Extract(deleteAfter: false)">Extract</div>
+                <div class="context-menu-item" @onclick="() => Extract(deleteAfter: true)">Extract and delete archive</div>
+            }
             <div class="context-menu-item" @onclick="() => Transfer(move: false)">Copy to...</div>
             <div class="context-menu-item" @onclick="() => Transfer(move: true)">Move to...</div>
             <div class="context-menu-separator"></div>
@@ -172,9 +169,6 @@
         }
     </div>
 }
-
-<Dialogs @ref="dialogs" />
-<Toast @ref="toast" />
 
 @code {
     [Parameter] public List<Collection> Collections { get; set; } = new();
@@ -188,17 +182,12 @@
         (SortColumn.ModifiedAt, "Modified"),
     ];
 
-    private static readonly string[] ArchiveExtensions = [".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".tbz2", ".txz"];
     private const int MaxRangeSelection = 10_000;
 
-    private Dialogs dialogs = default!;
-    private Toast toast = default!;
     private Virtualize<IndexedFile>? virtualizeRef;
 
-    // Desktop services; null on hosts without file system access.
-    private FileOperationsService? fileOps;
-    private ArchiveService? archiveSvc;
-    private ActivityLogService? activityLog;
+    // Null on hosts without file system access (no file operations there).
+    private FileSystemFeatures? fs;
 
     // Query state
     private string searchQuery = "";
@@ -235,12 +224,7 @@
 
     protected override async Task OnInitializedAsync()
     {
-        if (Capabilities.HasFileSystemAccess)
-        {
-            fileOps = Services.GetRequiredService<FileOperationsService>();
-            archiveSvc = Services.GetRequiredService<ArchiveService>();
-            activityLog = Services.GetRequiredService<ActivityLogService>();
-        }
+        fs = Services.GetService<FileSystemFeatures>();
         await LoadStatsAsync();
     }
 
@@ -255,35 +239,20 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        try
+        if (firstRender)
         {
-            if (firstRender)
-            {
-                await Js.InitColumnResizeAsync(".file-list-table");
-            }
-            if (renameSelectionEnd is int end)
-            {
-                renameSelectionEnd = null;
-                await Js.SelectRenameInputAsync(end);
-            }
-            if (adjustContextMenu)
-            {
-                adjustContextMenu = false;
-                await Js.AdjustContextMenuAsync();
-            }
+            await Js.InitColumnResizeAsync(".file-list-table");
         }
-        catch (JSDisconnectedException)
+        if (renameSelectionEnd is int end)
         {
-            // Circuit gone (Web host): nothing left to update.
+            renameSelectionEnd = null;
+            await Js.SelectRenameInputAsync(end);
         }
-    }
-
-    // Called by the shell after collections changed or files were re-indexed.
-    public async Task RefreshDataAsync()
-    {
-        ClearSelection();
-        await LoadStatsAsync();
-        await RefreshListAsync();
+        if (adjustContextMenu)
+        {
+            adjustContextMenu = false;
+            await Js.AdjustContextMenuAsync();
+        }
     }
 
     // --- Loading -------------------------------------------------------------------------------
@@ -300,7 +269,7 @@
         return await Search.SearchWithSortAsync(
             cleanQuery, column, direction, count, offset,
             SelectedCollectionFilter(),
-            fileTypeFilter == FileTypeFilter.Archives ? ArchiveExtensions : null,
+            fileTypeFilter == FileTypeFilter.Archives ? ArchiveService.Extensions : null,
             directoryFilter,
             showFolders ? null : false,
             token);
@@ -482,7 +451,7 @@
         {
             // A second click on the only selected row after a pause starts renaming (like Explorer).
             var sinceLastClick = (DateTime.UtcNow - lastClickTime).TotalMilliseconds;
-            if (fileOps != null && lastClickedFileId == file.Id && sinceLastClick is >= 500 and <= 1500
+            if (fs != null && lastClickedFileId == file.Id && sinceLastClick is >= 500 and <= 1500
                 && selected.Count == 1 && selected.ContainsKey(file.Id))
             {
                 StartRenameForSelected();
@@ -508,7 +477,7 @@
         catch (Exception ex)
         {
             Logger.LogError(ex, "Range selection failed");
-            toast.Show($"Selection failed: {ex.Message}", error: true);
+            Feedback.ShowToast($"Selection failed: {ex.Message}", error: true);
         }
     }
 
@@ -518,10 +487,10 @@
 
         switch (e.Key)
         {
-            case "F2" when fileOps != null && selected.Count == 1:
+            case "F2" when fs != null && selected.Count == 1:
                 StartRenameForSelected();
                 break;
-            case "Delete" when fileOps != null && selected.Count > 0:
+            case "Delete" when fs != null && selected.Count > 0:
                 await DeleteSelected();
                 break;
             case "Escape":
@@ -556,19 +525,19 @@
 
     private async Task OnNameDoubleClick(IndexedFile file)
     {
-        if (fileOps == null)
+        if (fs == null)
         {
             await CopyPathsAsync([file.Path]);
             return;
         }
-        await ReportFailureAsync(await fileOps.OpenFileAsync(file.Path));
+        await ReportFailureAsync(await fs.Files.OpenFileAsync(file.Path));
     }
 
     private async Task OnDirectoryDoubleClick(IndexedFile file)
     {
-        if (fileOps != null)
+        if (fs != null)
         {
-            await ReportFailureAsync(await fileOps.OpenFolderAsync(file.Path));
+            await ReportFailureAsync(await fs.Files.OpenFolderAsync(file.Path));
         }
     }
 
@@ -595,52 +564,28 @@
     private async Task CopyPathsAsync(IReadOnlyCollection<string> paths)
     {
         var copied = await Js.CopyTextAsync(string.Join(Environment.NewLine, paths));
-        toast.Show(copied ? (paths.Count == 1 ? "Path copied" : $"{paths.Count} paths copied") : "Clipboard unavailable", error: !copied);
+        Feedback.ShowToast(copied ? (paths.Count == 1 ? "Path copied" : $"{UiFormat.Count(paths.Count, "path")} copied") : "Clipboard unavailable", error: !copied);
     }
 
     private async Task ReportFailureAsync(OperationResult result)
     {
         if (!result.IsSuccess && !result.IsCancelled)
         {
-            await dialogs.ShowErrorAsync(result.ErrorMessage ?? "Unknown error");
+            await Feedback.ShowErrorAsync(result.ErrorMessage ?? "Unknown error");
         }
     }
 
     // --- File operations -------------------------------------------------------------------------
 
-    // Shared plumbing of every file operation: activity log entry with progress, error dialog,
-    // success toast, then a refresh of the list and stats.
+    // A file operation changes the listing whatever its outcome: refresh afterwards.
     private async Task RunOperationAsync(string description, string successMessage,
         Func<Action<int, int, string>, Task<OperationResult>> operation)
     {
-        var activity = activityLog!.StartActivity(description);
-        OperationResult result;
-        try
-        {
-            result = await operation((current, total, name) => activityLog.ReportProgress(activity.Id, current, total, name));
-        }
-        catch (Exception ex)
-        {
-            Logger.LogError(ex, "{Operation} failed", description);
-            result = OperationResult.Failure(ex.Message);
-        }
-
+        var result = await Feedback.RunOperationAsync(description, operation, () => successMessage);
         if (result.IsSuccess)
         {
-            activityLog.CompleteActivity(activity.Id);
-            toast.Show(successMessage);
             ClearSelection();
         }
-        else if (result.IsCancelled)
-        {
-            activityLog.FailActivity(activity.Id, "Cancelled");
-        }
-        else
-        {
-            activityLog.FailActivity(activity.Id, result.ErrorMessage ?? "Error");
-            await dialogs.ShowErrorAsync(result.ErrorMessage ?? "The operation failed");
-        }
-
         await LoadStatsAsync();
         await RefreshListAsync();
     }
@@ -650,16 +595,16 @@
         CloseContextMenu();
         if (selected.Count == 0) return;
 
-        var destination = await dialogs.PickFolderAsync();
+        var destination = await Feedback.PickFolderAsync();
         if (destination == null) return;
 
         var ids = selected.Keys.ToList();
         var verb = move ? "Moving" : "Copying";
-        await RunOperationAsync($"{verb} {UiFormat.Items(ids.Count)} to \"{destination}\"",
+        await RunOperationAsync($"{verb} {UiFormat.Count(ids.Count, "item")} to \"{destination}\"",
             move ? "Moved" : "Copied",
             progress => move
-                ? fileOps!.MoveFilesAsync(ids, destination, dialogs.ResolveConflictAsync, progress)
-                : fileOps!.CopyFilesAsync(ids, destination, dialogs.ResolveConflictAsync, progress));
+                ? fs!.Files.MoveFilesAsync(ids, destination, Feedback.ResolveConflictAsync, progress)
+                : fs!.Files.CopyFilesAsync(ids, destination, Feedback.ResolveConflictAsync, progress));
     }
 
     private async Task DeleteSelected()
@@ -668,11 +613,11 @@
         if (selected.Count == 0) return;
 
         var ids = selected.Keys.ToList();
-        var what = ids.Count == 1 ? $"\"{selected.Values.First().Name}\"" : UiFormat.Items(ids.Count);
-        if (!await dialogs.ConfirmAsync("Delete", $"Move {what} to the trash?", "Delete", danger: true)) return;
+        var what = ids.Count == 1 ? $"\"{selected.Values.First().Name}\"" : UiFormat.Count(ids.Count, "item");
+        if (!await Feedback.ConfirmAsync("Delete", $"Move {what} to the trash?", "Delete", danger: true)) return;
 
-        await RunOperationAsync($"Deleting {UiFormat.Items(ids.Count)}", "Moved to trash",
-            progress => fileOps!.DeleteFilesAsync(ids, progress));
+        await RunOperationAsync($"Deleting {UiFormat.Count(ids.Count, "item")}", "Moved to trash",
+            progress => fs!.Files.DeleteFilesAsync(ids, progress));
     }
 
     private async Task Extract(bool deleteAfter)
@@ -682,14 +627,15 @@
         if (archives.Count == 0) return;
 
         var label = deleteAfter ? "Extracting and deleting" : "Extracting";
-        await RunOperationAsync($"{label} {archives.Count} archive(s)", $"Extracted {archives.Count} archive(s)", async progress =>
+        var count = UiFormat.Count(archives.Count, "archive");
+        await RunOperationAsync($"{label} {count}", $"Extracted {count}", async progress =>
         {
             var errors = new List<FileOperationError>();
             var extractedIds = new List<long>();
             for (var i = 0; i < archives.Count; i++)
             {
                 progress(i + 1, archives.Count, archives[i].Name);
-                var result = await archiveSvc!.ExtractSmartAsync(archives[i].Path);
+                var result = await fs!.Archives.ExtractSmartAsync(archives[i].Path);
                 if (result.IsSuccess)
                     extractedIds.Add(archives[i].Id);
                 else
@@ -699,13 +645,11 @@
             // Only archives that extracted cleanly are deleted.
             if (deleteAfter && extractedIds.Count > 0)
             {
-                var deleted = await fileOps!.DeleteFilesAsync(extractedIds);
+                var deleted = await fs!.Files.DeleteFilesAsync(extractedIds);
                 errors.AddRange(deleted.Errors);
             }
 
-            return errors.Count == 0
-                ? OperationResult.Success()
-                : OperationResult.Failure($"{errors.Count} archive(s) failed: " + string.Join("; ", errors.Select(e => $"{Path.GetFileName(e.Path)}: {e.Message}")));
+            return OperationResult.FromBatch("l'extraction", extractedIds.Count, 0, errors);
         });
     }
 
@@ -751,7 +695,7 @@
         if (string.IsNullOrEmpty(newName) || selected.GetValueOrDefault(fileId)?.Name == newName) return;
 
         await RunOperationAsync($"Renaming to \"{newName}\"", "Renamed",
-            _ => fileOps!.RenameFileAsync(fileId, newName, dialogs.ResolveConflictAsync));
+            _ => fs!.Files.RenameFileAsync(fileId, newName, Feedback.ResolveConflictAsync));
     }
 
     public void Dispose()

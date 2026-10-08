@@ -50,14 +50,17 @@ window.fileIndexer = {
         }
     },
 
-    // Theme: class on <html>, persisted in localStorage (also read by the host page before
-    // first render to avoid a flash of the wrong theme).
+    // Theme: class on <html>, persisted in localStorage. Host pages load this script in <head>
+    // and call applyStoredTheme() before first paint (no flash of the wrong theme).
     isLightTheme: function () {
         try { return localStorage.getItem('theme') === 'light'; } catch (e) { return false; }
     },
     setLightTheme: function (light) {
         document.documentElement.classList.toggle('light-theme', light);
         try { localStorage.setItem('theme', light ? 'light' : 'dark'); } catch (e) { }
+    },
+    applyStoredTheme: function () {
+        document.documentElement.classList.toggle('light-theme', window.fileIndexer.isLightTheme());
     },
 
     // Focuses the inline rename box and selects the name without its extension.
@@ -66,11 +69,6 @@ window.fileIndexer = {
         if (!input) return;
         input.focus();
         input.setSelectionRange(0, selectionEnd);
-    },
-
-    focus: function (selector) {
-        var el = document.querySelector(selector);
-        if (el) el.focus();
     },
 
     copyText: async function (text) {

@@ -1,6 +1,7 @@
 @inject CollectionService CollectionSvc
 @inject BuildInfoService BuildInfo
 @inject FileIndexerJs Js
+@inject UiFeedback Feedback
 @inject ILogger<AppShell> Logger
 
 <div class="page-container">
@@ -24,11 +25,11 @@
             <ChildContent>
                 @if (activeTab == Tab.Search)
                 {
-                    <SearchView @ref="searchView" Collections="collections" />
+                    <SearchView Collections="collections ?? new()" />
                 }
                 else
                 {
-                    <CollectionsView OnCollectionsChanged="OnCollectionsChanged" />
+                    <CollectionsView Collections="collections" OnCollectionsChanged="LoadCollections" />
                 }
             </ChildContent>
             <ErrorContent Context="ex">
@@ -59,6 +60,10 @@
     </Modal>
 }
 
+@* Rendered last so they stack above every view and modal. *@
+<Dialogs />
+<Toast />
+
 @code {
     // Host-specific settings (e.g. database selection on MAUI), shown above the app info.
     [Parameter] public RenderFragment? SettingsContent { get; set; }
@@ -68,8 +73,8 @@
     private Tab activeTab = Tab.Search;
     private bool isLightTheme;
     private bool showSettings;
-    private List<Collection> collections = new();
-    private SearchView? searchView;
+    // The one copy of the collection list, handed to both views (null while loading).
+    private List<Collection>? collections;
     private ErrorBoundary? errorBoundary;
 
     protected override async Task OnInitializedAsync()
@@ -79,15 +84,10 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender) return;
-        try
+        if (firstRender)
         {
             isLightTheme = await Js.IsLightThemeAsync();
             StateHasChanged();
-        }
-        catch (Exception ex) when (ex is JSException or JSDisconnectedException or InvalidOperationException)
-        {
-            // Prerendering or disconnected circuit: the page script already applied the theme.
         }
     }
 
@@ -101,24 +101,14 @@
         {
             Logger.LogError(ex, "Failed to load collections");
             collections = new();
+            Feedback.ShowToast($"Cannot load collections: {ex.Message}", error: true);
         }
     }
 
     private void SetTab(Tab tab)
     {
         activeTab = tab;
-        // The view of the other tab is disposed: never call into it.
-        searchView = null;
         errorBoundary?.Recover();
-    }
-
-    private async Task OnCollectionsChanged()
-    {
-        await LoadCollections();
-        if (activeTab == Tab.Search && searchView != null)
-        {
-            await searchView.RefreshDataAsync();
-        }
     }
 
     private async Task ToggleTheme()

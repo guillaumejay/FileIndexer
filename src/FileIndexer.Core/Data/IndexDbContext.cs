@@ -14,12 +14,15 @@ public class IndexDbContext : IDisposable
     // soon as the last connection closes. Null for file-based databases.
     private SqliteConnection? _keepAlive;
 
-    public IndexDbContext(string dbPath = "fileindex.db")
+    public const string InMemory = ":memory:";
+    public const string DefaultFileName = "fileindex.db";
+
+    public static bool IsInMemory(string? dbPath) => string.IsNullOrWhiteSpace(dbPath) || dbPath == InMemory;
+
+    public IndexDbContext(string dbPath = DefaultFileName)
     {
         Open(dbPath);
     }
-
-    public string DatabasePath { get; private set; } = "";
 
     // Points the context at another database file. Every operation opens its own connection,
     // so callers holding this context switch over on their next call.
@@ -34,21 +37,18 @@ public class IndexDbContext : IDisposable
 
     private void Open(string dbPath)
     {
-        var inMemory = string.IsNullOrWhiteSpace(dbPath) || dbPath == ":memory:";
-        if (inMemory)
+        if (IsInMemory(dbPath))
         {
             // Shared-cache in-memory DB so every pooled connection sees the same data.
             // A unique name keeps independent contexts (e.g. tests) isolated from each other.
             var name = "fileindexer_" + Guid.NewGuid().ToString("N");
             _connectionString = $"Data Source={name};Mode=Memory;Cache=Shared";
             _keepAlive = CreateConnection();
-            DatabasePath = ":memory:";
         }
         else
         {
             _connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString();
             _keepAlive = null;
-            DatabasePath = dbPath;
         }
 
         InitializeDatabase();
@@ -121,7 +121,7 @@ public class IndexDbContext : IDisposable
         if (!ColumnExists(connection, "files", "is_directory"))
             connection.Execute("ALTER TABLE files ADD COLUMN is_directory INTEGER NOT NULL DEFAULT 0");
         if (!ColumnExists(connection, "collections", "excluded_directories"))
-            connection.Execute("ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '__MACOSX'");
+            connection.Execute($"ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '{Collection.DefaultExcludedDirectories}'");
 
         // FTS5 virtual table for ultra-fast full-text search
         connection.Execute("""
@@ -150,8 +150,18 @@ public class IndexDbContext : IDisposable
             END
         """);
 
+        // Only the indexed columns re-index FTS: rescans refresh every row's timestamps, which
+        // must not rewrite the full-text index. Older databases have an unconditional trigger.
+        var updateTrigger = connection.ExecuteScalar<string?>(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'files_au'");
+        if (updateTrigger != null && !updateTrigger.Contains(" WHEN ", StringComparison.OrdinalIgnoreCase))
+            connection.Execute("DROP TRIGGER files_au");
+
+        // WHEN compares values: "UPDATE OF" alone fires whenever the upsert names the columns.
         connection.Execute("""
-            CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+            CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE OF name, path, directory ON files
+            WHEN old.name IS NOT new.name OR old.path IS NOT new.path OR old.directory IS NOT new.directory
+            BEGIN
                 INSERT INTO files_fts(files_fts, rowid, name, path, directory)
                 VALUES ('delete', old.id, old.name, old.path, old.directory);
                 INSERT INTO files_fts(rowid, name, path, directory)
@@ -408,38 +418,30 @@ public class IndexDbContext : IDisposable
         };
     }
 
-    public async Task ClearCollectionAsync(int collectionId)
-    {
-        using var connection = CreateConnection();
-        await connection.ExecuteAsync(
-            "DELETE FROM files WHERE collection_id = @CollectionId",
-            new { CollectionId = collectionId });
-    }
-
-    // Path -> modified timestamp (round-trip string) of every row of a collection. Loaded once
-    // per scan so incremental scans compare in memory instead of issuing one query per file.
-    public async Task<Dictionary<string, string>> GetCollectionFileStampsAsync(int collectionId)
+    // Path -> modified time (UTC ticks) of every row of a collection. Loaded once per scan so
+    // incremental scans compare in memory instead of issuing one query per file.
+    public async Task<Dictionary<string, long>> GetCollectionFileStampsAsync(int collectionId)
     {
         using var connection = CreateConnection();
         var rows = await connection.QueryAsync<(string Path, string Modified)>(
             "SELECT path, modified_at_utc FROM files WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
-        return rows.ToDictionary(r => r.Path, r => r.Modified, StringComparer.Ordinal);
+        return rows.ToDictionary(r => r.Path, r => ParseUtc(r.Modified).Ticks, StringComparer.Ordinal);
     }
 
     public async Task<int> DeleteCollectionFilesByPathsAsync(int collectionId, IEnumerable<string> paths)
     {
         var deleted = 0;
         using var connection = CreateConnection();
-        // Stay well under SQLite's bound-parameter limit.
+        using var tx = connection.BeginTransaction();
+        // Chunked only to stay under SQLite's bound-parameter limit; one commit for the lot.
         foreach (var chunk in paths.Chunk(500))
         {
-            using var tx = connection.BeginTransaction();
             deleted += await connection.ExecuteAsync(
                 "DELETE FROM files WHERE collection_id = @CollectionId AND path IN @Paths",
                 new { CollectionId = collectionId, Paths = chunk }, tx);
-            tx.Commit();
         }
+        tx.Commit();
         return deleted;
     }
 
@@ -475,46 +477,46 @@ public class IndexDbContext : IDisposable
         return dtos.Select(MapToIndexedFile).ToList();
     }
 
+    // SQL condition matching `path` itself and everything below it, written as a range so the
+    // path index serves it: descendants all start with "path + separator", and sort before the
+    // same prefix with its (ASCII) separator incremented. Adds @{name}, @{name}Prefix, @{name}End.
+    private static string SubtreeCondition(DynamicParameters parameters, string name, string path)
+    {
+        var prefix = PathHelper.WithTrailingSeparator(path);
+        parameters.Add(name, path);
+        parameters.Add($"{name}Prefix", prefix);
+        parameters.Add($"{name}End", prefix[..^1] + (char)(prefix[^1] + 1));
+        return $"(path = @{name} OR (path >= @{name}Prefix AND path < @{name}End))";
+    }
+
     // Rewrites every row (in all collections) for a file or folder that moved on disk from
     // oldPath to newPath, including all rows below it when it is a folder. Rows already indexed
     // at the destination are dropped first: they describe what the move just replaced.
     public async Task MovePathAsync(string oldPath, string newPath)
     {
-        var oldPrefix = oldPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var newPrefix = newPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var p = new DynamicParameters();
+        var destination = SubtreeCondition(p, "NewPath", newPath);
+        var source = SubtreeCondition(p, "OldPath", oldPath);
         var newName = Path.GetFileName(newPath.TrimEnd(Path.DirectorySeparatorChar));
-        var p = new
-        {
-            OldPath = oldPath,
-            NewPath = newPath,
-            OldPrefix = oldPrefix,
-            OldPrefixLen = oldPrefix.Length,
-            NewPrefix = newPrefix,
-            NewPrefixLen = newPrefix.Length,
-            NewName = newName,
-            NewDirectory = Path.GetDirectoryName(newPath) ?? "",
-            NewExtension = Path.GetExtension(newName).ToLowerInvariant()
-        };
+        p.Add("NewName", newName);
+        p.Add("NewDirectory", Path.GetDirectoryName(newPath) ?? "");
+        p.Add("NewExtension", Path.GetExtension(newName).ToLowerInvariant());
 
         using var connection = CreateConnection();
         using var tx = connection.BeginTransaction();
-        await connection.ExecuteAsync(
-            "DELETE FROM files WHERE path = @NewPath OR substr(path, 1, @NewPrefixLen) = @NewPrefix", p, tx);
-        await connection.ExecuteAsync("""
+        await connection.ExecuteAsync($"DELETE FROM files WHERE {destination}", p, tx);
+        // The item itself, then its descendants (old folder prefix swapped for the new one).
+        // length() counts characters the way substr() does, unlike .NET's UTF-16 Length.
+        await connection.ExecuteAsync($"""
             UPDATE files
-            SET path = @NewPath, directory = @NewDirectory, name = @NewName,
-                extension = CASE WHEN is_directory = 1 THEN '' ELSE @NewExtension END
-            WHERE path = @OldPath
-            """, p, tx);
-        // Descendants: swap the old folder prefix for the new one in both path and directory.
-        await connection.ExecuteAsync("""
-            UPDATE files
-            SET path = @NewPrefix || substr(path, @OldPrefixLen + 1),
-                directory = CASE
-                    WHEN directory = @OldPath THEN @NewPath
-                    ELSE @NewPrefix || substr(directory, @OldPrefixLen + 1)
-                END
-            WHERE substr(path, 1, @OldPrefixLen) = @OldPrefix
+            SET path = CASE WHEN path = @OldPath THEN @NewPath
+                            ELSE @NewPathPrefix || substr(path, length(@OldPathPrefix) + 1) END,
+                directory = CASE WHEN path = @OldPath THEN @NewDirectory
+                                 WHEN directory = @OldPath THEN @NewPath
+                                 ELSE @NewPathPrefix || substr(directory, length(@OldPathPrefix) + 1) END,
+                name = CASE WHEN path = @OldPath THEN @NewName ELSE name END,
+                extension = CASE WHEN path = @OldPath AND is_directory = 0 THEN @NewExtension ELSE extension END
+            WHERE {source}
             """, p, tx);
         tx.Commit();
     }
@@ -526,22 +528,10 @@ public class IndexDbContext : IDisposable
         using var tx = connection.BeginTransaction();
         foreach (var path in paths)
         {
-            var prefix = path.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            await connection.ExecuteAsync(
-                "DELETE FROM files WHERE path = @Path OR substr(path, 1, @PrefixLen) = @Prefix",
-                new { Path = path, Prefix = prefix, PrefixLen = prefix.Length }, tx);
+            var p = new DynamicParameters();
+            await connection.ExecuteAsync($"DELETE FROM files WHERE {SubtreeCondition(p, "Path", path)}", p, tx);
         }
         tx.Commit();
-    }
-
-    public async Task DeleteFilesByIdsAsync(IEnumerable<long> ids)
-    {
-        var idList = ids.ToList();
-        if (!idList.Any()) return;
-
-        using var connection = CreateConnection();
-        await connection.ExecuteAsync(
-            "DELETE FROM files WHERE id IN @Ids", new { Ids = idList });
     }
 
     // Collection methods
@@ -582,7 +572,7 @@ public class IndexDbContext : IDisposable
     }
 
     // Creates the collection and its paths atomically: an import never leaves a half-created one.
-    public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = "__MACOSX", IEnumerable<string>? paths = null)
+    public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = Collection.DefaultExcludedDirectories, IEnumerable<string>? paths = null)
     {
         var now = DateTime.UtcNow;
         using var connection = CreateConnection();
@@ -604,10 +594,7 @@ public class IndexDbContext : IDisposable
 
         foreach (var path in paths ?? [])
         {
-            var pathId = await connection.ExecuteScalarAsync<int>(
-                "INSERT INTO collection_paths (collection_id, path) VALUES (@CollectionId, @Path); SELECT last_insert_rowid();",
-                new { CollectionId = id, Path = path }, tx);
-            collection.Paths.Add(new CollectionPath { Id = pathId, CollectionId = id, Path = path });
+            collection.Paths.Add(await InsertPathAsync(connection, id, path, tx));
         }
 
         tx.Commit();
@@ -632,30 +619,18 @@ public class IndexDbContext : IDisposable
         await connection.ExecuteAsync("DELETE FROM collections WHERE id = @Id", new { Id = id });
     }
 
-    public async Task<List<CollectionPath>> GetCollectionPathsAsync(int collectionId)
-    {
-        using var connection = CreateConnection();
-        var paths = await connection.QueryAsync<CollectionPathDto>(
-            "SELECT * FROM collection_paths WHERE collection_id = @CollectionId ORDER BY id",
-            new { CollectionId = collectionId });
-        return paths.Select(MapToCollectionPath).ToList();
-    }
-
     public async Task<CollectionPath> AddCollectionPathAsync(int collectionId, string path)
     {
         using var connection = CreateConnection();
-        var id = await connection.ExecuteScalarAsync<int>("""
-            INSERT INTO collection_paths (collection_id, path)
-            VALUES (@CollectionId, @Path);
-            SELECT last_insert_rowid();
-            """, new { CollectionId = collectionId, Path = path });
+        return await InsertPathAsync(connection, collectionId, path);
+    }
 
-        return new CollectionPath
-        {
-            Id = id,
-            CollectionId = collectionId,
-            Path = path
-        };
+    private static async Task<CollectionPath> InsertPathAsync(SqliteConnection connection, int collectionId, string path, SqliteTransaction? tx = null)
+    {
+        var id = await connection.ExecuteScalarAsync<int>(
+            "INSERT INTO collection_paths (collection_id, path) VALUES (@CollectionId, @Path); SELECT last_insert_rowid();",
+            new { CollectionId = collectionId, Path = path }, tx);
+        return new CollectionPath { Id = id, CollectionId = collectionId, Path = path };
     }
 
     public async Task RemoveCollectionPathAsync(int pathId)
@@ -710,15 +685,6 @@ public class IndexDbContext : IDisposable
         return overlaps;
     }
 
-    public async Task<(int FileCount, DateTime? LastIndexedAtUtc)> GetCollectionStatsAsync(int collectionId)
-    {
-        using var connection = CreateConnection();
-        var stats = await connection.QuerySingleAsync<(long Count, string? LastIndexed)>(
-            "SELECT COUNT(*), MAX(indexed_at_utc) FROM files WHERE collection_id = @CollectionId",
-            new { CollectionId = collectionId });
-        return ((int)stats.Count, ParseUtcOrNull(stats.LastIndexed));
-    }
-
     private static string NormalizePath(string path)
     {
         return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
@@ -741,7 +707,7 @@ public class IndexDbContext : IDisposable
         Id = (int)dto.Id,
         Name = dto.Name,
         Description = dto.Description,
-        ExcludedDirectories = dto.Excluded_Directories ?? "__MACOSX",
+        ExcludedDirectories = dto.Excluded_Directories ?? Collection.DefaultExcludedDirectories,
         CreatedAtUtc = ParseUtc(dto.Created_At_Utc)
     };
 
@@ -758,7 +724,7 @@ public class IndexDbContext : IDisposable
         public string Name { get; set; } = "";
         public string? Description { get; set; }
         public string Created_At_Utc { get; set; } = "";
-        public string Excluded_Directories { get; set; } = "__MACOSX";
+        public string Excluded_Directories { get; set; } = Collection.DefaultExcludedDirectories;
         public long File_Count { get; set; }
         public string? Last_Indexed_At_Utc { get; set; }
     }

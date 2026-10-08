@@ -57,19 +57,21 @@ public class IndexDbContextTests
     }
 
     [Fact]
-    public async Task DeleteFilesByIds_RemovesFromIndexAndSearch()
+    public async Task DeletePaths_RemovesEntryAndDescendantsOnly()
     {
         using var db = new IndexDbContext(":memory:");
         var col = await db.CreateCollectionAsync("test", null);
-        await db.UpsertFilesAsync(new[] { MakeFile(col.Id, "deleteme.txt") });
+        await db.UpsertFilesAsync([
+            MakeFile(col.Id, "deleteme", @"C:\data"),
+            MakeFile(col.Id, "inner.txt", @"C:\data\deleteme"),
+            MakeFile(col.Id, "deleteme-sibling.txt", @"C:\data")
+        ]);
 
-        var inserted = await db.SearchAsync("deleteme");
-        var id = inserted.Files.Single().Id;
+        await db.DeletePathsAsync([@"C:\data\deleteme"]);
 
-        await db.DeleteFilesByIdsAsync(new[] { id });
-
-        var after = await db.SearchAsync("deleteme");
-        Assert.Equal(0, after.TotalCount);
+        // The range filter must not catch "deleteme-sibling.txt" (same prefix, no separator).
+        var left = Assert.Single((await db.SearchAsync("")).Files);
+        Assert.Equal("deleteme-sibling.txt", left.Name);
     }
 
     [Fact]
@@ -119,7 +121,7 @@ public class IndexDbContextTests
         await db.DeleteCollectionAsync(col.Id);
 
         Assert.Equal(0, (await db.SearchAsync("orphan")).TotalCount);
-        Assert.Empty(await db.GetCollectionPathsAsync(col.Id));
+        Assert.Null(await db.GetCollectionByIdAsync(col.Id));
     }
 
     [Fact]

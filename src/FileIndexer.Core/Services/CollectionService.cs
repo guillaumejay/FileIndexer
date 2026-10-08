@@ -22,7 +22,7 @@ public class CollectionService
         return await _db.GetCollectionByIdAsync(id);
     }
 
-    public async Task<Collection> CreateAsync(string name, string? description = null, string excludedDirectories = "__MACOSX", IEnumerable<string>? paths = null)
+    public async Task<Collection> CreateAsync(string name, string? description = null, string excludedDirectories = Collection.DefaultExcludedDirectories, IEnumerable<string>? paths = null)
     {
         return await _db.CreateCollectionAsync(name, description, excludedDirectories, paths);
     }
@@ -35,11 +35,6 @@ public class CollectionService
     public async Task DeleteAsync(int id)
     {
         await _db.DeleteCollectionAsync(id);
-    }
-
-    public async Task<List<CollectionPath>> GetPathsAsync(int collectionId)
-    {
-        return await _db.GetCollectionPathsAsync(collectionId);
     }
 
     public async Task<CollectionPath> AddPathAsync(int collectionId, string path)
@@ -55,10 +50,5 @@ public class CollectionService
     public async Task<List<PathOverlap>> CheckPathOverlapsAsync(int collectionId, string newPath)
     {
         return await _db.CheckPathOverlapsAsync(collectionId, newPath);
-    }
-
-    public async Task<(int FileCount, DateTime? LastIndexedAtUtc)> GetStatsAsync(int collectionId)
-    {
-        return await _db.GetCollectionStatsAsync(collectionId);
     }
 }

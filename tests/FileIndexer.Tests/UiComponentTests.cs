@@ -22,7 +22,6 @@ public class UiComponentTests : BunitContext
         Services.AddLogging();
         Services.AddFileIndexer(_ => _db, new PlatformCapabilities { HasFileSystemAccess = fileSystemAccess });
         Services.AddSingleton<ITrashService>(_trash);
-        Services.AddSingleton<IConfigFileExchange, JsConfigFileExchange>();
     }
 
     private async Task<Collection> SeedAsync()
@@ -68,14 +67,15 @@ public class UiComponentTests : BunitContext
         File.WriteAllText(path, "x");
         try
         {
+            var dialogs = Render<Dialogs>(); // the session's modal host (AppShell renders it)
             var cut = Render<SearchView>(p => p.Add(v => v.Collections, [col]));
             cut.WaitForElement("tbody tr td.file-name").Click();
 
             cut.Find(".file-list-container").KeyDown("Delete");
 
-            cut.WaitForElement(".modal-overlay");
+            dialogs.WaitForElement(".modal-overlay");
             Assert.Empty(_trash.Trashed); // nothing happens before confirmation
-            cut.Find(".modal-actions .btn-danger").Click();
+            dialogs.Find(".modal-actions .btn-danger").Click();
             cut.WaitForAssertion(() => Assert.Equal(path, Assert.Single(_trash.Trashed)));
         }
         finally
@@ -88,9 +88,9 @@ public class UiComponentTests : BunitContext
     public async Task CollectionsView_WithoutFileSystemAccess_IsReadOnly()
     {
         Configure(fileSystemAccess: false);
-        await SeedAsync();
+        var col = await SeedAsync();
 
-        var cut = Render<CollectionsView>();
+        var cut = Render<CollectionsView>(p => p.Add(v => v.Collections, [col]));
         cut.WaitForElement(".collection-card");
 
         Assert.DoesNotContain("New Collection", cut.Markup);
@@ -102,9 +102,9 @@ public class UiComponentTests : BunitContext
     public async Task CollectionsView_WithFileSystemAccess_OffersEditing()
     {
         Configure(fileSystemAccess: true);
-        await SeedAsync();
+        var col = await SeedAsync();
 
-        var cut = Render<CollectionsView>();
+        var cut = Render<CollectionsView>(p => p.Add(v => v.Collections, [col]));
         cut.WaitForElement(".collection-card");
 
         Assert.Contains("New Collection", cut.Markup);

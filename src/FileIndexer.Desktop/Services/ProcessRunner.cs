@@ -7,23 +7,10 @@ namespace FileIndexer.Services;
 // "/home/me/My Files/it's.txt".
 internal static class ProcessRunner
 {
-    public static async Task<(int ExitCode, string Error)> RunAsync(string fileName, params string[] arguments)
-    {
-        using var process = Process.Start(CreateStartInfo(fileName, arguments, redirect: true))
-            ?? throw new InvalidOperationException($"Impossible de lancer {fileName}");
-
-        // Drain both streams so a chatty tool cannot block on a full pipe.
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync().ConfigureAwait(false);
-        await stdout.ConfigureAwait(false);
-        return (process.ExitCode, await stderr.ConfigureAwait(false));
-    }
-
     // Fire-and-forget launch (e.g. a file manager window).
     public static void Launch(string fileName, params string[] arguments)
     {
-        using var _ = Process.Start(CreateStartInfo(fileName, arguments, redirect: false));
+        using var _ = Process.Start(CreateStartInfo(fileName, arguments, redirectError: false));
     }
 
     // Runs a trash tool and turns its exit code into an OperationResult.
@@ -31,8 +18,11 @@ internal static class ProcessRunner
     {
         try
         {
-            var (exitCode, error) = await RunAsync(fileName, arguments);
-            return exitCode == 0
+            using var process = Process.Start(CreateStartInfo(fileName, arguments, redirectError: true))
+                ?? throw new InvalidOperationException($"Impossible de lancer {fileName}");
+            var error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            return process.ExitCode == 0
                 ? OperationResult.Success()
                 : OperationResult.Failure($"Erreur {fileName} : {error}");
         }
@@ -42,14 +32,13 @@ internal static class ProcessRunner
         }
     }
 
-    private static ProcessStartInfo CreateStartInfo(string fileName, string[] arguments, bool redirect)
+    private static ProcessStartInfo CreateStartInfo(string fileName, string[] arguments, bool redirectError)
     {
         var psi = new ProcessStartInfo(fileName)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
-            RedirectStandardOutput = redirect,
-            RedirectStandardError = redirect
+            RedirectStandardError = redirectError
         };
         foreach (var argument in arguments)
             psi.ArgumentList.Add(argument);

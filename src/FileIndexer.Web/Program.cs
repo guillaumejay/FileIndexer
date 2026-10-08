@@ -23,7 +23,6 @@ builder.Services.AddFileIndexer(
         scanner.DegreeOfParallelism = appSettings.ScanParallelism;
         scanner.BatchSize = appSettings.ScanBatchSize;
     });
-builder.Services.AddScoped<IConfigFileExchange, JsConfigFileExchange>();
 
 var app = builder.Build();
 
@@ -47,8 +46,8 @@ app.Run();
 static string ResolveDatabasePath(string configured, string baseDir)
 {
     if (string.IsNullOrWhiteSpace(configured))
-        configured = "fileindex.db";
-    if (configured == ":memory:" || Path.IsPathRooted(configured))
+        configured = IndexDbContext.DefaultFileName;
+    if (IndexDbContext.IsInMemory(configured) || Path.IsPathRooted(configured))
         return configured;
     return Path.GetFullPath(configured, baseDir);
 }

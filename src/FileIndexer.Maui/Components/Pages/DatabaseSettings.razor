@@ -1,20 +1,20 @@
 @inject DatabaseManager Databases
 @inject IndexDbContext Db
 @inject NavigationManager Navigation
-@inject IServiceProvider Services
+@inject UiFeedback Feedback
 
 <div class="settings-group">
     <label class="settings-label">Database</label>
     <div class="current-db-path">@(Databases.CurrentPath ?? "No database selected")</div>
-    @if (DatabaseManager.CopiesIntoAppStorage)
+    @if (Databases.CopiesIntoAppStorage)
     {
         <p class="field-hint">A copy is kept on this device. Select the synced file again to refresh it.</p>
     }
     <div class="settings-actions">
         <button class="btn-secondary" @onclick="Select">
-            @(DatabaseManager.CopiesIntoAppStorage ? "Select / refresh" : "Change database")
+            @(Databases.CopiesIntoAppStorage ? "Select / refresh" : "Change database")
         </button>
-        @if (folderPicker != null)
+        @if (!Databases.CopiesIntoAppStorage)
         {
             <button class="btn-primary" @onclick="Create">Create new</button>
         }
@@ -26,28 +26,12 @@
 </div>
 
 @code {
-    private INativeFolderPicker? folderPicker;
     private string? error;
-
-    protected override void OnInitialized()
-    {
-        folderPicker = Services.GetService<INativeFolderPicker>();
-    }
 
     private async Task Select()
     {
-        error = null;
-        try
-        {
-            if (await Databases.SelectAsync(Db))
-            {
-                Reload();
-            }
-        }
-        catch (Exception ex)
-        {
-            error = $"Cannot open the database: {ex.Message}";
-        }
+        (var changed, error) = await Databases.SelectAsync(Db);
+        if (changed) Reload();
     }
 
     private async Task Create()
@@ -55,7 +39,7 @@
         error = null;
         try
         {
-            var folder = await folderPicker!.PickFolderAsync();
+            var folder = await Feedback.PickFolderAsync();
             if (folder == null) return;
             Databases.Create(Db, folder);
             Reload();

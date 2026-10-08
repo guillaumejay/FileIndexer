@@ -1,36 +1,37 @@
-@inject IServiceProvider Services
+@* The session's modal host (rendered once, by AppShell). Use it through UiFeedback. *@
+@inject UiFeedback Feedback
 @implements IDisposable
 
 @switch (current)
 {
     case ConfirmRequest c:
-        <Modal Title="@c.Title" Size="modal-small" OnClose="() => c.Result.TrySetResult(false)">
+        <Modal Title="@c.Title" Size="modal-small" OnClose="c.Cancel">
             <p>@c.Message</p>
             <div class="modal-actions">
-                <button class="btn-secondary" @onclick="() => c.Result.TrySetResult(false)">Cancel</button>
+                <button class="btn-secondary" @onclick="c.Cancel">Cancel</button>
                 <button class="@(c.Danger ? "btn-danger" : "btn-primary")" @onclick="() => c.Result.TrySetResult(true)">@c.ConfirmLabel</button>
             </div>
         </Modal>
         break;
 
     case ConflictRequest r:
-        <Modal Title="File conflict" OnClose="() => r.Result.TrySetResult(ConflictResolution.Cancel)">
+        <Modal Title="File conflict" OnClose="r.Cancel">
             <p><strong>@r.Name</strong> already exists at the destination.</p>
             <p class="conflict-path">@r.Destination</p>
             <p>What do you want to do?</p>
             <div class="conflict-actions">
                 <button class="btn-primary" @onclick="() => r.Result.TrySetResult(ConflictResolution.Replace)">Replace</button>
                 <button class="btn-secondary" @onclick="() => r.Result.TrySetResult(ConflictResolution.KeepBoth)">Keep both</button>
-                <button class="btn-secondary" @onclick="() => r.Result.TrySetResult(ConflictResolution.Cancel)">Cancel</button>
+                <button class="btn-secondary" @onclick="r.Cancel">Cancel</button>
             </div>
         </Modal>
         break;
 
     case ErrorRequest e:
-        <Modal Title="Error" IsError="true" OnClose="() => e.Result.TrySetResult(true)">
+        <Modal Title="Error" IsError="true" OnClose="e.Cancel">
             <p class="error-message">@e.Message</p>
             <div class="modal-actions">
-                <button class="btn-primary" @onclick="() => e.Result.TrySetResult(true)">OK</button>
+                <button class="btn-primary" @onclick="e.Cancel">OK</button>
             </div>
         </Modal>
         break;
@@ -38,55 +39,45 @@
     case FolderRequest f:
         <FolderBrowser InitialPath="@f.InitialPath"
                        OnSelect="path => f.Result.TrySetResult(path)"
-                       OnCancel="() => f.Result.TrySetResult(null)" />
+                       OnCancel="f.Cancel" />
         break;
 }
 
 @code {
     // One modal at a time; requests made while one is open wait their turn.
     private readonly SemaphoreSlim gate = new(1, 1);
-    private object? current;
+    private Request? current;
 
-    private sealed record ConfirmRequest(string Title, string Message, string ConfirmLabel, bool Danger, TaskCompletionSource<bool> Result);
-    private sealed record ConflictRequest(string Name, string Destination, TaskCompletionSource<ConflictResolution> Result);
-    private sealed record ErrorRequest(string Message, TaskCompletionSource<bool> Result);
-    private sealed record FolderRequest(string? InitialPath, TaskCompletionSource<string?> Result);
-
-    public Task<bool> ConfirmAsync(string title, string message, string confirmLabel, bool danger = false)
+    // Each request knows the answer that means "dismissed", used by Cancel/close and on dispose.
+    private abstract record Request
     {
-        var result = NewResult<bool>();
-        return ShowAsync(new ConfirmRequest(title, message, confirmLabel, danger, result), result);
+        public abstract void Cancel();
     }
 
-    // Matches the onConflict callback of FileOperationsService.
-    public Task<ConflictResolution> ResolveConflictAsync(string name, string destination)
+    private abstract record Request<T>(T Dismissed) : Request
     {
-        var result = NewResult<ConflictResolution>();
-        return ShowAsync(new ConflictRequest(name, destination, result), result);
+        public TaskCompletionSource<T> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override void Cancel() => Result.TrySetResult(Dismissed);
     }
 
-    public Task ShowErrorAsync(string message)
-    {
-        var result = NewResult<bool>();
-        return ShowAsync(new ErrorRequest(message, result), result);
-    }
+    private sealed record ConfirmRequest(string Title, string Message, string ConfirmLabel, bool Danger) : Request<bool>(false);
+    private sealed record ConflictRequest(string Name, string Destination) : Request<ConflictResolution>(ConflictResolution.Cancel);
+    private sealed record ErrorRequest(string Message) : Request<bool>(true);
+    private sealed record FolderRequest(string? InitialPath) : Request<string?>((string?)null);
 
-    // Uses the host's native picker when it has one, otherwise the in-page folder browser.
-    public async Task<string?> PickFolderAsync(string? initialPath = null)
-    {
-        var native = Services.GetService<INativeFolderPicker>();
-        if (native != null)
-        {
-            return await native.PickFolderAsync();
-        }
+    protected override void OnInitialized() => Feedback.Dialogs = this;
 
-        var result = NewResult<string?>();
-        return await ShowAsync(new FolderRequest(initialPath, result), result);
-    }
+    internal Task<bool> ConfirmAsync(string title, string message, string confirmLabel, bool danger) =>
+        ShowAsync(new ConfirmRequest(title, message, confirmLabel, danger));
 
-    private static TaskCompletionSource<T> NewResult<T>() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    internal Task<ConflictResolution> ResolveConflictAsync(string name, string destination) =>
+        ShowAsync(new ConflictRequest(name, destination));
 
-    private async Task<T> ShowAsync<T>(object request, TaskCompletionSource<T> result)
+    internal Task ShowErrorAsync(string message) => ShowAsync(new ErrorRequest(message));
+
+    internal Task<string?> PickFolderAsync(string? initialPath) => ShowAsync(new FolderRequest(initialPath));
+
+    private async Task<T> ShowAsync<T>(Request<T> request)
     {
         await gate.WaitAsync();
         try
@@ -96,7 +87,7 @@
                 current = request;
                 StateHasChanged();
             });
-            return await result.Task;
+            return await request.Result.Task;
         }
         finally
         {
@@ -111,13 +102,8 @@
 
     public void Dispose()
     {
-        // Unblock anything still waiting on a dialog of a component being torn down.
-        switch (current)
-        {
-            case ConfirmRequest c: c.Result.TrySetResult(false); break;
-            case ConflictRequest r: r.Result.TrySetResult(ConflictResolution.Cancel); break;
-            case ErrorRequest e: e.Result.TrySetResult(true); break;
-            case FolderRequest f: f.Result.TrySetResult(null); break;
-        }
+        if (Feedback.Dialogs == this) Feedback.Dialogs = null;
+        // Unblock anything still waiting on a dialog.
+        current?.Cancel();
     }
 }

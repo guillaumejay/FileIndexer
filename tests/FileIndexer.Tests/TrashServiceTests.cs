@@ -89,7 +89,10 @@ public sealed class WindowsOnlyFactAttribute : FactAttribute
 {
     public static bool IsWindows => OperatingSystem.IsWindows();
 
-    public WindowsOnlyFactAttribute()
+    public WindowsOnlyFactAttribute(
+        [System.Runtime.CompilerServices.CallerFilePath] string? sourceFilePath = null,
+        [System.Runtime.CompilerServices.CallerLineNumber] int sourceLineNumber = -1)
+        : base(sourceFilePath, sourceLineNumber)
     {
         Skip = "Windows-only trash backend.";
         SkipUnless = nameof(IsWindows);

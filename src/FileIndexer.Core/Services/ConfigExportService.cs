@@ -50,11 +50,20 @@ public class ConfigExportService
         return JsonSerializer.Deserialize<ConfigExport>(json, JsonOptions);
     }
 
+    // True when importing would hit collections that already exist (by name).
+    public async Task<bool> HasCollisionsAsync(ConfigExport config)
+    {
+        var existingNames = await ExistingNamesAsync();
+        return config.Collections.Any(c => existingNames.Contains(c.Name));
+    }
+
+    private async Task<HashSet<string>> ExistingNamesAsync() =>
+        (await _db.GetCollectionsAsync()).Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     public async Task<ImportResult> ImportCollectionsAsync(ConfigExport config, ImportCollisionStrategy strategy)
     {
         var result = new ImportResult();
-        var existingCollections = await _db.GetCollectionsAsync();
-        var existingNames = existingCollections.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existingNames = await ExistingNamesAsync();
 
         foreach (var exported in config.Collections)
         {
@@ -81,7 +90,7 @@ public class ConfigExportService
                 result.Details.Add($"Renamed: \"{exported.Name}\" -> \"{name}\"");
             }
 
-            await _db.CreateCollectionAsync(name, exported.Description, exported.ExcludedDirectories ?? "__MACOSX", exported.Paths);
+            await _db.CreateCollectionAsync(name, exported.Description, exported.ExcludedDirectories ?? Collection.DefaultExcludedDirectories, exported.Paths);
             existingNames.Add(name);
             result.Imported++;
         }

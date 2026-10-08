@@ -1,4 +1,5 @@
 using FileIndexer.Data;
+using FileIndexer.UI.Services;
 using Microsoft.Extensions.Logging;
 
 namespace FileIndexer.Maui.Services;
@@ -6,22 +7,18 @@ namespace FileIndexer.Maui.Services;
 // Owns the choice of database file. Switching re-points the shared IndexDbContext, so the
 // change applies immediately instead of after a restart.
 //
-// On Android/iOS a picked file is only readable through a temporary cache copy that the OS may
-// purge: the database is copied into the app's own storage instead, and "Select" again refreshes
-// it from the synced file.
-public class DatabaseManager(ILogger<DatabaseManager> logger)
+// Hosts without file system access (Android/iOS) only get a picked file through a temporary
+// cache copy that the OS may purge: the database is copied into the app's own storage instead,
+// and selecting again refreshes it from the synced file.
+public class DatabaseManager(PlatformCapabilities capabilities, ILogger<DatabaseManager> logger)
 {
     private const string DatabasePathKey = "DatabasePath";
 
     public event Action? Changed;
 
-#if DESKTOP
-    public static bool CopiesIntoAppStorage => false;
-#else
-    public static bool CopiesIntoAppStorage => true;
-#endif
+    public bool CopiesIntoAppStorage => !capabilities.HasFileSystemAccess;
 
-    private static string LocalCopyPath => Path.Combine(FileSystem.AppDataDirectory, "fileindex.db");
+    private static string LocalCopyPath => Path.Combine(FileSystem.AppDataDirectory, IndexDbContext.DefaultFileName);
 
     // The saved database, if it still exists.
     public string? CurrentPath
@@ -36,9 +33,10 @@ public class DatabaseManager(ILogger<DatabaseManager> logger)
     public bool HasDatabase => CurrentPath != null;
 
     // Path the shared context is created with at startup (in-memory until one is chosen).
-    public string StartupPath => CurrentPath ?? ":memory:";
+    public string StartupPath => CurrentPath ?? IndexDbContext.InMemory;
 
-    public async Task<bool> SelectAsync(IndexDbContext db)
+    // Lets the user pick a database file. Returns whether the database changed, or the error to show.
+    public async Task<(bool Changed, string? Error)> SelectAsync(IndexDbContext db)
     {
         try
         {
@@ -54,16 +52,16 @@ public class DatabaseManager(ILogger<DatabaseManager> logger)
                     { DevicePlatform.MacCatalyst, ["public.database", "public.data"] },
                 })
             });
-            if (result == null) return false;
+            if (result == null) return (false, null);
 
             if (!CopiesIntoAppStorage)
             {
                 Use(db, result.FullPath);
-                return true;
+                return (true, null);
             }
 
             // Release the current copy before overwriting it.
-            db.SwitchTo(":memory:");
+            db.SwitchTo(IndexDbContext.InMemory);
             foreach (var stale in new[] { LocalCopyPath + "-wal", LocalCopyPath + "-shm" })
             {
                 File.Delete(stale);
@@ -74,17 +72,17 @@ public class DatabaseManager(ILogger<DatabaseManager> logger)
                 await source.CopyToAsync(target);
             }
             Use(db, LocalCopyPath);
-            return true;
+            return (true, null);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Selecting the database failed");
-            throw;
+            return (false, $"Cannot open the database: {ex.Message}");
         }
     }
 
-    // Desktop only: a new, empty database in the chosen folder.
-    public void Create(IndexDbContext db, string folder) => Use(db, Path.Combine(folder, "fileindex.db"));
+    // Hosts with file system access only: a new, empty database in the chosen folder.
+    public void Create(IndexDbContext db, string folder) => Use(db, Path.Combine(folder, IndexDbContext.DefaultFileName));
 
     private void Use(IndexDbContext db, string path)
     {

@@ -1,5 +1,4 @@
 @inject IServiceProvider Services
-@inject PlatformCapabilities Capabilities
 @implements IDisposable
 
 @if (activityLog != null)
@@ -82,9 +81,9 @@
 
     protected override void OnInitialized()
     {
-        if (!Capabilities.HasFileSystemAccess) return;
+        activityLog = Services.GetService<FileSystemFeatures>()?.ActivityLog;
+        if (activityLog == null) return;
 
-        activityLog = Services.GetRequiredService<ActivityLogService>();
         activityLog.OnChanged += OnActivityChanged;
         Refresh();
     }

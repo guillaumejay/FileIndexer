@@ -92,8 +92,7 @@
 
         try
         {
-            directories = Directory.GetDirectories(currentPath)
-                .Where(d => !IsHiddenOrSystem(d))
+            directories = Directory.EnumerateDirectories(currentPath, "*", VisibleFolders)
                 .OrderBy(d => Path.GetFileName(d), StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
@@ -107,18 +106,11 @@
         }
     }
 
-    private static bool IsHiddenOrSystem(string path)
+    private static readonly EnumerationOptions VisibleFolders = new()
     {
-        try
-        {
-            var attrs = File.GetAttributes(path);
-            return (attrs & (FileAttributes.Hidden | FileAttributes.System)) != 0;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+        AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
+        IgnoreInaccessible = true
+    };
 
     private void NavigateTo(string path)
     {
