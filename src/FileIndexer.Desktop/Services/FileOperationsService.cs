@@ -1,11 +1,12 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using FileIndexer.Data;
 using FileIndexer.Models;
 using Microsoft.Extensions.Logging;
 
 namespace FileIndexer.Services;
 
+// File and folder operations that keep the disk and the index in step. Index rows are
+// rewritten by path (in every collection that holds them, folder contents included).
 public class FileOperationsService
 {
     private readonly IndexDbContext _db;
@@ -24,55 +25,57 @@ public class FileOperationsService
         return await _db.GetFilesByIdsAsync(ids);
     }
 
-    public async Task<OperationResult> OpenFileAsync(string path)
+    public Task<OperationResult> OpenFileAsync(string path)
     {
-        if (!File.Exists(path))
+        if (!Path.Exists(path))
         {
-            return OperationResult.Failure("Le fichier n'existe plus");
+            return Task.FromResult(OperationResult.Failure("Le fichier n'existe plus"));
         }
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            using var _ = Process.Start(new ProcessStartInfo
             {
                 FileName = path,
                 UseShellExecute = true
             });
-            return OperationResult.Success();
+            return Task.FromResult(OperationResult.Success());
         }
         catch (Exception ex)
         {
-            return OperationResult.Failure($"Impossible d'ouvrir le fichier : {ex.Message}");
+            return Task.FromResult(OperationResult.Failure($"Impossible d'ouvrir le fichier : {ex.Message}"));
         }
     }
 
-    public async Task<OperationResult> OpenFolderAsync(string path)
+    public Task<OperationResult> OpenFolderAsync(string path)
     {
         var directory = Path.GetDirectoryName(path);
         if (directory == null || !Directory.Exists(directory))
         {
-            return OperationResult.Failure("Le dossier n'existe plus");
+            return Task.FromResult(OperationResult.Failure("Le dossier n'existe plus"));
         }
 
         try
         {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            if (OperatingSystem.IsWindows())
             {
-                Process.Start("explorer.exe", $"/select,\"{path}\"");
+                // explorer.exe has its own command-line parsing: "/select," must prefix the quoted
+                // path within one argument. Windows paths cannot contain '"', so this is safe.
+                using var _ = Process.Start("explorer.exe", $"/select,\"{path}\"");
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            else if (OperatingSystem.IsLinux())
             {
-                Process.Start("xdg-open", directory);
+                ProcessRunner.Launch("xdg-open", directory);
             }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            else if (OperatingSystem.IsMacOS())
             {
-                Process.Start("open", $"-R \"{path}\"");
+                ProcessRunner.Launch("open", "-R", path);
             }
-            return OperationResult.Success();
+            return Task.FromResult(OperationResult.Success());
         }
         catch (Exception ex)
         {
-            return OperationResult.Failure($"Impossible d'ouvrir le dossier : {ex.Message}");
+            return Task.FromResult(OperationResult.Failure($"Impossible d'ouvrir le dossier : {ex.Message}"));
         }
     }
 
@@ -84,15 +87,9 @@ public class FileOperationsService
             return OperationResult.Failure("Fichier non trouvé dans l'index");
         }
 
-        if (!File.Exists(file.Path))
+        if (!Path.Exists(file.Path))
         {
             return OperationResult.Failure("Le fichier n'existe plus sur le disque");
-        }
-
-        var invalidChars = Path.GetInvalidFileNameChars();
-        if (newName.IndexOfAny(invalidChars) >= 0)
-        {
-            return OperationResult.Failure("Le nom contient des caractères interdits");
         }
 
         if (string.IsNullOrWhiteSpace(newName))
@@ -100,198 +97,241 @@ public class FileOperationsService
             return OperationResult.Failure("Le nom ne peut pas être vide");
         }
 
+        if (newName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+        {
+            return OperationResult.Failure("Le nom contient des caractères interdits");
+        }
+
         var directory = Path.GetDirectoryName(file.Path)!;
         var newPath = Path.Combine(directory, newName);
-
-        if (File.Exists(newPath) && !string.Equals(file.Path, newPath, StringComparison.OrdinalIgnoreCase))
+        if (newPath == file.Path)
         {
-            var resolution = await onConflict(file.Name, newName);
-            switch (resolution)
+            return OperationResult.Success();
+        }
+
+        var overwrite = false;
+        // A case-only rename targets the item itself on case-insensitive file systems: no conflict.
+        if (!PathHelper.AreSame(file.Path, newPath))
+        {
+            var target = await ResolveDestinationAsync(newPath, file.IsDirectory, () => onConflict(file.Name, newName));
+            if (target == null)
             {
-                case ConflictResolution.Cancel:
-                    return OperationResult.Cancelled();
-                case ConflictResolution.Replace:
-                    File.Delete(newPath);
-                    break;
-                case ConflictResolution.KeepBoth:
-                    newName = GenerateUniqueName(directory, newName);
-                    newPath = Path.Combine(directory, newName);
-                    break;
+                return OperationResult.Cancelled();
             }
+            (newPath, overwrite) = target.Value;
         }
 
         try
         {
-            File.Move(file.Path, newPath);
-            await _db.UpdateFilePathAsync(fileId, newPath, directory, newName, Path.GetExtension(newName));
+            await MoveOnDiskAsync(file, newPath, overwrite);
+            await _db.MovePathAsync(file.Path, newPath);
             return OperationResult.Success();
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to rename {Path} to {NewPath}", file.Path, newPath);
             return OperationResult.Failure($"Impossible de renommer : {ex.Message}");
         }
     }
 
-    public async Task<OperationResult> CopyFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null)
+    public Task<OperationResult> CopyFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null) =>
+        TransferAsync(move: false, fileIds, destinationFolder, onConflict, onProgress);
+
+    public Task<OperationResult> MoveFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null) =>
+        TransferAsync(move: true, fileIds, destinationFolder, onConflict, onProgress);
+
+    private async Task<OperationResult> TransferAsync(bool move, IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress)
     {
+        var label = move ? "le déplacement" : "la copie";
+
         if (!Directory.Exists(destinationFolder))
         {
             return OperationResult.Failure("Le dossier de destination n'existe pas");
         }
 
         var files = await _db.GetFilesByIdsAsync(fileIds);
-        if (!files.Any())
+        if (files.Count == 0)
         {
             return OperationResult.Failure("Aucun fichier trouvé");
         }
 
-        var copiedFiles = new List<IndexedFile>();
         var errors = new List<FileOperationError>();
         var skipped = 0;
+        var succeeded = 0;
         var processed = 0;
         foreach (var file in files)
         {
             onProgress?.Invoke(++processed, files.Count, file.Name);
 
-            if (!File.Exists(file.Path))
+            if (!Path.Exists(file.Path))
             {
                 skipped++;
-                _logger.LogWarning("Copy skipped: source file no longer exists: {Path}", file.Path);
+                _logger.LogWarning("{Operation} skipped: source no longer exists: {Path}", label, file.Path);
+                continue;
+            }
+
+            if (file.IsDirectory && PathHelper.IsSameOrUnder(destinationFolder, file.Path))
+            {
+                errors.Add(new FileOperationError(file.Path, "Impossible de placer un dossier dans lui-même"));
                 continue;
             }
 
             var destPath = Path.Combine(destinationFolder, file.Name);
-            var finalName = file.Name;
+            var overwrite = false;
 
-            if (File.Exists(destPath))
+            if (PathHelper.AreSame(destPath, file.Path))
             {
-                var resolution = await onConflict(file.Name, destPath);
-                switch (resolution)
+                if (move)
                 {
-                    case ConflictResolution.Cancel:
-                        // Persist what was already copied before aborting so the index stays consistent.
-                        if (copiedFiles.Count > 0)
-                        {
-                            await _db.InsertFilesAsync(copiedFiles);
-                        }
-                        _logger.LogInformation("Copy cancelled by user after {Count} file(s).", copiedFiles.Count);
-                        return OperationResult.Cancelled();
-                    case ConflictResolution.Replace:
-                        File.Delete(destPath);
-                        break;
-                    case ConflictResolution.KeepBoth:
-                        finalName = GenerateUniqueName(destinationFolder, file.Name);
-                        destPath = Path.Combine(destinationFolder, finalName);
-                        break;
+                    // Already where it should be: nothing to do. Never "replace" an item with itself.
+                    skipped++;
+                    continue;
                 }
+                // Copying into its own folder: make a sibling copy, as file managers do.
+                destPath = Path.Combine(destinationFolder, PathHelper.GenerateUniqueName(destinationFolder, file.Name, file.IsDirectory));
+            }
+            else
+            {
+                var target = await ResolveDestinationAsync(destPath, file.IsDirectory, () => onConflict(file.Name, destPath));
+                if (target == null)
+                {
+                    _logger.LogInformation("{Operation} cancelled by user after {Count} item(s).", label, succeeded);
+                    return OperationResult.Cancelled();
+                }
+                (destPath, overwrite) = target.Value;
             }
 
             try
             {
-                File.Copy(file.Path, destPath);
-                var fileInfo = new FileInfo(destPath);
-                copiedFiles.Add(new IndexedFile
+                if (move)
                 {
-                    CollectionId = file.CollectionId,
-                    Name = finalName,
-                    Path = destPath,
-                    Directory = destinationFolder,
-                    Extension = file.Extension,
-                    SizeBytes = fileInfo.Length,
-                    CreatedAtUtc = fileInfo.CreationTimeUtc,
-                    ModifiedAtUtc = fileInfo.LastWriteTimeUtc,
-                    IndexedAtUtc = DateTime.UtcNow
-                });
+                    await MoveOnDiskAsync(file, destPath, overwrite);
+                    await _db.MovePathAsync(file.Path, destPath);
+                }
+                else
+                {
+                    await CopyOnDiskAsync(file, destPath, overwrite);
+                    await IndexCopyAsync(file, destPath, overwrite);
+                }
+                succeeded++;
             }
             catch (Exception ex)
             {
                 errors.Add(new FileOperationError(file.Path, ex.Message));
-                _logger.LogError(ex, "Failed to copy {Path} to {Destination}", file.Path, destPath);
+                _logger.LogError(ex, "Failed {Operation} of {Path} to {Destination}", label, file.Path, destPath);
             }
         }
 
-        if (copiedFiles.Count > 0)
-        {
-            await _db.InsertFilesAsync(copiedFiles);
-        }
-
-        return BuildBatchResult("la copie", copiedFiles.Count, skipped, errors);
+        return BuildBatchResult(label, succeeded, skipped, errors);
     }
 
-    public async Task<OperationResult> MoveFilesAsync(IEnumerable<long> fileIds, string destinationFolder, Func<string, string, Task<ConflictResolution>> onConflict, Action<int, int, string>? onProgress = null)
+    // Asks the user only when something already exists at destPath. Returns null on Cancel,
+    // otherwise the path to write to and whether the existing item must be overwritten.
+    private static async Task<(string Path, bool Overwrite)?> ResolveDestinationAsync(string destPath, bool isDirectory, Func<Task<ConflictResolution>> ask)
     {
-        if (!Directory.Exists(destinationFolder))
+        if (!Path.Exists(destPath))
         {
-            return OperationResult.Failure("Le dossier de destination n'existe pas");
+            return (destPath, false);
         }
 
-        var files = await _db.GetFilesByIdsAsync(fileIds);
-        if (!files.Any())
+        var directory = Path.GetDirectoryName(destPath)!;
+        return await ask() switch
         {
-            return OperationResult.Failure("Aucun fichier trouvé");
+            ConflictResolution.Cancel => null,
+            ConflictResolution.Replace => (destPath, true),
+            _ => (Path.Combine(directory, PathHelper.GenerateUniqueName(directory, Path.GetFileName(destPath), isDirectory)), false)
+        };
+    }
+
+    private async Task MoveOnDiskAsync(IndexedFile item, string destPath, bool overwrite)
+    {
+        if (!item.IsDirectory)
+        {
+            // Overwrites atomically: the old target is only removed once the move can happen.
+            File.Move(item.Path, destPath, overwrite);
+            return;
         }
 
-        var errors = new List<FileOperationError>();
-        var skipped = 0;
-        var moved = 0;
-        var processed = 0;
-        foreach (var file in files)
+        if (overwrite)
         {
-            onProgress?.Invoke(++processed, files.Count, file.Name);
-
-            if (!File.Exists(file.Path))
-            {
-                skipped++;
-                _logger.LogWarning("Move skipped: source file no longer exists: {Path}", file.Path);
-                continue;
-            }
-
-            var destPath = Path.Combine(destinationFolder, file.Name);
-            var finalName = file.Name;
-
-            if (File.Exists(destPath))
-            {
-                var resolution = await onConflict(file.Name, destPath);
-                switch (resolution)
-                {
-                    case ConflictResolution.Cancel:
-                        _logger.LogInformation("Move cancelled by user after {Count} file(s).", moved);
-                        return OperationResult.Cancelled();
-                    case ConflictResolution.Replace:
-                        File.Delete(destPath);
-                        break;
-                    case ConflictResolution.KeepBoth:
-                        finalName = GenerateUniqueName(destinationFolder, file.Name);
-                        destPath = Path.Combine(destinationFolder, finalName);
-                        break;
-                }
-            }
-
-            try
-            {
-                File.Move(file.Path, destPath);
-                await _db.UpdateFilePathAsync(file.Id, destPath, destinationFolder, finalName, Path.GetExtension(finalName));
-                moved++;
-            }
-            catch (Exception ex)
-            {
-                errors.Add(new FileOperationError(file.Path, ex.Message));
-                _logger.LogError(ex, "Failed to move {Path} to {Destination}", file.Path, destPath);
-            }
+            await TrashExistingAsync(destPath);
         }
 
-        return BuildBatchResult("le déplacement", moved, skipped, errors);
+        if (string.Equals(Path.GetPathRoot(item.Path), Path.GetPathRoot(destPath), StringComparison.OrdinalIgnoreCase))
+        {
+            Directory.Move(item.Path, destPath);
+        }
+        else
+        {
+            // Directory.Move cannot cross volumes: copy, then remove the source.
+            await Task.Run(() => CopyDirectory(item.Path, destPath));
+            Directory.Delete(item.Path, recursive: true);
+        }
+    }
+
+    private async Task CopyOnDiskAsync(IndexedFile item, string destPath, bool overwrite)
+    {
+        if (!item.IsDirectory)
+        {
+            File.Copy(item.Path, destPath, overwrite);
+            return;
+        }
+
+        if (overwrite)
+        {
+            await TrashExistingAsync(destPath);
+        }
+        await Task.Run(() => CopyDirectory(item.Path, destPath));
+    }
+
+    // Replacing a folder discards its whole content: send it to the trash so it can be recovered.
+    private async Task TrashExistingAsync(string path)
+    {
+        var result = await _trashService.MoveToTrashAsync(path);
+        if (!result.IsSuccess)
+        {
+            throw new IOException($"Impossible de remplacer {path} : {result.ErrorMessage}");
+        }
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (var file in Directory.EnumerateFiles(source))
+        {
+            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)));
+        }
+        foreach (var dir in Directory.EnumerateDirectories(source))
+        {
+            CopyDirectory(dir, Path.Combine(destination, Path.GetFileName(dir)));
+        }
+    }
+
+    // Indexes the copy in the source's collection (a folder copy brings its whole content).
+    private async Task IndexCopyAsync(IndexedFile source, string destPath, bool overwrite)
+    {
+        if (overwrite)
+        {
+            // Rows describing what was just replaced are now wrong.
+            await _db.DeletePathsAsync([destPath]);
+        }
+
+        IEnumerable<FileSystemInfo> entries = source.IsDirectory
+            ? new[] { new DirectoryInfo(destPath) }.Concat(new DirectoryInfo(destPath).EnumerateFileSystemInfos("*", SearchOption.AllDirectories))
+            : [new FileInfo(destPath)];
+
+        await _db.BulkUpsertAsync(entries.Select(e => IndexedFile.FromFileSystemInfo(e, source.CollectionId)));
     }
 
     public async Task<OperationResult> DeleteFilesAsync(IEnumerable<long> fileIds, Action<int, int, string>? onProgress = null)
     {
         var files = await _db.GetFilesByIdsAsync(fileIds);
-        if (!files.Any())
+        if (files.Count == 0)
         {
             return OperationResult.Failure("Aucun fichier trouvé");
         }
 
-        var deletedIds = new List<long>();
+        var removedPaths = new List<string>();
         var errors = new List<FileOperationError>();
         var skipped = 0;
         var trashed = 0;
@@ -300,12 +340,12 @@ public class FileOperationsService
         {
             onProgress?.Invoke(++processed, files.Count, file.Name);
 
-            if (!File.Exists(file.Path))
+            if (!Path.Exists(file.Path))
             {
                 // Already gone from disk: drop the stale index entry.
-                deletedIds.Add(file.Id);
+                removedPaths.Add(file.Path);
                 skipped++;
-                _logger.LogWarning("Delete: file already absent from disk, removing index entry: {Path}", file.Path);
+                _logger.LogWarning("Delete: already absent from disk, removing index entry: {Path}", file.Path);
                 continue;
             }
 
@@ -317,13 +357,13 @@ public class FileOperationsService
                 _logger.LogError("Failed to move to trash: {Path}: {Error}", file.Path, result.ErrorMessage);
                 continue;
             }
-            deletedIds.Add(file.Id);
+            removedPaths.Add(file.Path);
             trashed++;
         }
 
-        if (deletedIds.Count > 0)
+        if (removedPaths.Count > 0)
         {
-            await _db.DeleteFilesByIdsAsync(deletedIds);
+            await _db.DeletePathsAsync(removedPaths);
         }
 
         return BuildBatchResult("la suppression", trashed, skipped, errors);
@@ -344,6 +384,11 @@ public class FileOperationsService
                 CleanEmptyFoldersRecursive(rootPath, deletedFolders, ref errorCount);
             }
         });
+
+        if (deletedFolders.Count > 0)
+        {
+            await _db.DeletePathsAsync(deletedFolders);
+        }
 
         return new EmptyFolderCleanResult
         {
@@ -381,8 +426,8 @@ public class FileOperationsService
         }
     }
 
-    // Turns the per-file tallies of a batch into a single OperationResult: success when nothing
-    // failed (files missing on disk are skipped, not failures), otherwise an aggregated error.
+    // Turns the per-item tallies of a batch into a single OperationResult: success when nothing
+    // failed (items missing on disk are skipped, not failures), otherwise an aggregated error.
     private OperationResult BuildBatchResult(string operationLabel, int succeeded, int skipped, List<FileOperationError> errors)
     {
         if (errors.Count == 0)
@@ -398,7 +443,7 @@ public class FileOperationsService
             };
         }
 
-        var message = $"Échec de {operationLabel} pour {errors.Count} fichier(s) sur {succeeded + errors.Count} ; voir les journaux.";
+        var message = $"Échec de {operationLabel} pour {errors.Count} élément(s) sur {succeeded + errors.Count} ; voir les journaux.";
         _logger.LogWarning(
             "Completed {Operation} with errors: {Succeeded} succeeded, {Skipped} skipped, {Failed} failed.",
             operationLabel, succeeded, skipped, errors.Count);
@@ -411,22 +456,6 @@ public class FileOperationsService
             Errors = errors
         };
     }
-
-    private static string GenerateUniqueName(string directory, string fileName)
-    {
-        var nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
-        var ext = Path.GetExtension(fileName);
-        var counter = 1;
-
-        string newName;
-        do
-        {
-            newName = $"{nameWithoutExt} ({counter}){ext}";
-            counter++;
-        } while (File.Exists(Path.Combine(directory, newName)));
-
-        return newName;
-    }
 }
 
 public class OperationResult
@@ -435,13 +464,13 @@ public class OperationResult
     public bool IsCancelled { get; init; }
     public string? ErrorMessage { get; init; }
 
-    /// <summary>Number of files processed successfully in a batch operation.</summary>
+    /// <summary>Number of items processed successfully in a batch operation.</summary>
     public int SuccessCount { get; init; }
 
-    /// <summary>Number of files skipped because they no longer existed on disk.</summary>
+    /// <summary>Number of items skipped (no longer on disk, or already at the destination).</summary>
     public int SkippedCount { get; init; }
 
-    /// <summary>Per-file failures collected during a batch; empty when nothing failed.</summary>
+    /// <summary>Per-item failures collected during a batch; empty when nothing failed.</summary>
     public IReadOnlyList<FileOperationError> Errors { get; init; } = Array.Empty<FileOperationError>();
 
     public int FailureCount => Errors.Count;
@@ -451,7 +480,7 @@ public class OperationResult
     public static OperationResult Cancelled() => new() { IsSuccess = false, IsCancelled = true };
 }
 
-/// <summary>A single file-level failure inside a batch operation.</summary>
+/// <summary>A single item-level failure inside a batch operation.</summary>
 public record FileOperationError(string Path, string Message);
 
 public enum ConflictResolution
@@ -460,4 +489,3 @@ public enum ConflictResolution
     Replace,
     KeepBoth
 }
-

@@ -9,13 +9,13 @@ public class BuildFtsQueryTests
     [Fact]
     public void SingleWord_BecomesPrefixSearch()
     {
-        Assert.Equal("anim*", IndexDbContext.BuildFtsQuery("anim"));
+        Assert.Equal("\"anim\"*", IndexDbContext.BuildFtsQuery("anim"));
     }
 
     [Fact]
     public void MultipleWords_EachBecomePrefixSearch()
     {
-        Assert.Equal("foo* bar*", IndexDbContext.BuildFtsQuery("foo bar"));
+        Assert.Equal("\"foo\"* \"bar\"*", IndexDbContext.BuildFtsQuery("foo bar"));
     }
 
     [Fact]
@@ -40,6 +40,6 @@ public class BuildFtsQueryTests
     [Fact]
     public void MixedValidAndPunctuation_KeepsValidTokens()
     {
-        Assert.Equal("hello*", IndexDbContext.BuildFtsQuery("hello +++"));
+        Assert.Equal("\"hello\"*", IndexDbContext.BuildFtsQuery("hello +++"));
     }
 }

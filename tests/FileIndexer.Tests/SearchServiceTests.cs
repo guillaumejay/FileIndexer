@@ -45,7 +45,7 @@ public class SearchServiceTests : IDisposable
         };
     }
 
-    private Task Insert(params IndexedFile[] files) => _db.InsertFilesAsync(files);
+    private Task Insert(params IndexedFile[] files) => _db.UpsertFilesAsync(files);
 
     // --- Collection filter -------------------------------------------------------------------
 

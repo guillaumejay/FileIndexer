@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Dapper;
 using FileIndexer.Models;
@@ -38,8 +39,10 @@ public class IndexDbContext : IDisposable
     {
         var connection = new SqliteConnection(_connectionString);
         connection.Open();
-        // Wait instead of failing immediately when the DB is briefly locked by another connection.
-        connection.Execute("PRAGMA busy_timeout=5000;");
+        // foreign_keys is per-connection and OFF by default in SQLite: without it the
+        // ON DELETE CASCADE clauses are ignored. busy_timeout waits instead of failing
+        // immediately when the DB is briefly locked by another connection.
+        connection.Execute("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
         return connection;
     }
 
@@ -74,7 +77,7 @@ public class IndexDbContext : IDisposable
         """);
         connection.Execute("CREATE INDEX IF NOT EXISTS idx_collection_paths_collection ON collection_paths(collection_id)");
 
-        // Files table (path NOT unique - files can exist in multiple collections)
+        // Files table: a path is unique within a collection, but may appear in several collections.
         connection.Execute("""
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,15 +101,6 @@ public class IndexDbContext : IDisposable
             connection.Execute("ALTER TABLE files ADD COLUMN is_directory INTEGER NOT NULL DEFAULT 0");
         if (!ColumnExists(connection, "collections", "excluded_directories"))
             connection.Execute("ALTER TABLE collections ADD COLUMN excluded_directories TEXT NOT NULL DEFAULT '__MACOSX'");
-
-        // Indexes for common searches
-        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)");
-        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_directory ON files(directory)");
-        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at_utc)");
-
-        // Indexes for column sorting
-        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)");
-        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes)");
 
         // FTS5 virtual table for ultra-fast full-text search
         connection.Execute("""
@@ -143,6 +137,29 @@ public class IndexDbContext : IDisposable
                 VALUES (new.id, new.name, new.path, new.directory);
             END
         """);
+
+        // One-time repair before the unique index exists: older versions never enabled foreign
+        // keys (orphans survived collection deletion) and re-inserted rows on incremental scans
+        // (duplicates). Keep the most recent row per (collection, path).
+        if (!IndexExists(connection, "ux_files_collection_path"))
+        {
+            using var tx = connection.BeginTransaction();
+            connection.Execute("DELETE FROM collection_paths WHERE collection_id NOT IN (SELECT id FROM collections)", transaction: tx);
+            connection.Execute("DELETE FROM files WHERE collection_id NOT IN (SELECT id FROM collections)", transaction: tx);
+            connection.Execute("DELETE FROM files WHERE id NOT IN (SELECT MAX(id) FROM files GROUP BY collection_id, path)", transaction: tx);
+            connection.Execute("CREATE UNIQUE INDEX ux_files_collection_path ON files(collection_id, path)", transaction: tx);
+            tx.Commit();
+        }
+
+        // Indexes for common searches (path: cross-collection dedup and path operations)
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_path ON files(path)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_extension ON files(extension)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_directory ON files(directory)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_modified ON files(modified_at_utc)");
+
+        // Indexes for column sorting
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)");
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes)");
     }
 
     private static bool ColumnExists(SqliteConnection connection, string table, string column)
@@ -152,13 +169,28 @@ public class IndexDbContext : IDisposable
         return columns.Any(c => string.Equals(c, column, StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<int> InsertFilesAsync(IEnumerable<IndexedFile> files)
+    private static bool IndexExists(SqliteConnection connection, string index) =>
+        connection.ExecuteScalar<int>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = @Name", new { Name = index }) > 0;
+
+    // Inserts files, or refreshes the existing row when (collection_id, path) is already indexed.
+    // Updating in place keeps the row id stable and the FTS index in sync via the update trigger.
+    public async Task<int> UpsertFilesAsync(IEnumerable<IndexedFile> files)
     {
         const string sql = """
             INSERT INTO files
             (collection_id, name, path, directory, extension, size_bytes, is_directory, created_at_utc, modified_at_utc, indexed_at_utc)
             VALUES
             (@CollectionId, @Name, @Path, @Directory, @Extension, @SizeBytes, @IsDirectory, @CreatedAtUtc, @ModifiedAtUtc, @IndexedAtUtc)
+            ON CONFLICT(collection_id, path) DO UPDATE SET
+                name = excluded.name,
+                directory = excluded.directory,
+                extension = excluded.extension,
+                size_bytes = excluded.size_bytes,
+                is_directory = excluded.is_directory,
+                created_at_utc = excluded.created_at_utc,
+                modified_at_utc = excluded.modified_at_utc,
+                indexed_at_utc = excluded.indexed_at_utc
         """;
 
         var count = 0;
@@ -176,9 +208,9 @@ public class IndexDbContext : IDisposable
                 file.Extension,
                 file.SizeBytes,
                 IsDirectory = file.IsDirectory ? 1 : 0,
-                CreatedAtUtc = file.CreatedAtUtc.ToString("O"),
-                ModifiedAtUtc = file.ModifiedAtUtc.ToString("O"),
-                IndexedAtUtc = file.IndexedAtUtc.ToString("O")
+                CreatedAtUtc = FormatUtc(file.CreatedAtUtc),
+                ModifiedAtUtc = FormatUtc(file.ModifiedAtUtc),
+                IndexedAtUtc = FormatUtc(file.IndexedAtUtc)
             }, transaction);
             count++;
         }
@@ -187,27 +219,14 @@ public class IndexDbContext : IDisposable
         return count;
     }
 
-    public async Task<int> BulkInsertAsync(IEnumerable<IndexedFile> files, int batchSize = 1000)
+    public async Task<int> BulkUpsertAsync(IEnumerable<IndexedFile> files, int batchSize = 1000)
     {
-        var totalInserted = 0;
-        var batch = new List<IndexedFile>(batchSize);
-
-        foreach (var file in files)
+        var total = 0;
+        foreach (var batch in files.Chunk(batchSize))
         {
-            batch.Add(file);
-            if (batch.Count >= batchSize)
-            {
-                totalInserted += await InsertFilesAsync(batch);
-                batch.Clear();
-            }
+            total += await UpsertFilesAsync(batch);
         }
-
-        if (batch.Count > 0)
-        {
-            totalInserted += await InsertFilesAsync(batch);
-        }
-
-        return totalInserted;
+        return total;
     }
 
     public async Task<SearchResult> SearchWithSortAsync(
@@ -219,64 +238,18 @@ public class IndexDbContext : IDisposable
         IEnumerable<int>? collectionIds = null,
         IEnumerable<string>? extensionFilter = null,
         string? directoryFilter = null,
-        bool? showDirectories = null)
+        bool? showDirectories = null,
+        CancellationToken cancellationToken = default)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var isSearch = !string.IsNullOrWhiteSpace(query);
-        var collectionIdList = collectionIds?.ToList();
-        var hasCollectionFilter = collectionIdList != null && collectionIdList.Count > 0;
-        var needsDedup = !hasCollectionFilter || collectionIdList!.Count > 1;
-
-        // Build ORDER BY
-        var orderByColumn = sortColumn switch
-        {
-            SortColumn.Name => "name",
-            SortColumn.Directory => "directory",
-            SortColumn.Extension => "extension",
-            SortColumn.Size => "size_bytes",
-            SortColumn.ModifiedAt => "modified_at_utc",
-            SortColumn.Rank when isSearch => "rank",
-            _ => "name"
-        };
-        var orderByDir = sortDirection == SortDirection.Desc ? "DESC" : "ASC";
-
-        // Build collection filter clause
-        var collectionClause = hasCollectionFilter
-            ? $"collection_id IN ({string.Join(",", collectionIdList!)})"
-            : "1=1";
-
-        // Build extension filter clause
-        var extensionList = extensionFilter?.ToList();
-        var hasExtensionFilter = extensionList != null && extensionList.Count > 0;
-        var extensionClause = hasExtensionFilter
-            ? $"extension IN ({string.Join(",", extensionList!.Select((_, i) => $"@Ext{i}"))})"
-            : "1=1";
-
-        // Build directory filter clause
-        var directoryClause = directoryFilter != null ? "f.directory = @DirectoryPath" : "1=1";
-
-        // Build is_directory filter clause
-        var isDirClause = showDirectories switch
-        {
-            true => "f.is_directory = 1",
-            false => "f.is_directory = 0",
-            null => "1=1"
-        };
-
+        var scope = CollectionScope.From(collectionIds);
         var parameters = new DynamicParameters();
         parameters.Add("Limit", limit);
         parameters.Add("Offset", offset);
-        if (hasExtensionFilter)
-        {
-            for (int i = 0; i < extensionList!.Count; i++)
-                parameters.Add($"Ext{i}", extensionList[i]);
-        }
-        if (directoryFilter != null)
-        {
-            parameters.Add("DirectoryPath", directoryFilter);
-        }
 
-        using var connection = CreateConnection();
+        var from = "files f";
+        var where = new List<string> { scope.Clause };
 
         if (isSearch)
         {
@@ -286,99 +259,72 @@ public class IndexDbContext : IDisposable
             // MATCH expression throws a syntax error, so short-circuit to an empty result.
             if (string.IsNullOrWhiteSpace(ftsQuery))
             {
-                sw.Stop();
-                return new SearchResult
-                {
-                    Files = new List<IndexedFile>(),
-                    TotalCount = 0,
-                    SearchDuration = sw.Elapsed
-                };
+                return new SearchResult { Files = new List<IndexedFile>(), TotalCount = 0, SearchDuration = sw.Elapsed };
             }
 
+            from = "files f INNER JOIN files_fts fts ON f.id = fts.rowid";
+            where.Add("files_fts MATCH @Query");
             parameters.Add("Query", ftsQuery);
-
-            string sql;
-            string countSql;
-
-            if (needsDedup)
-            {
-                // Deduplicate by path when showing all or multiple collections
-                sql = $"""
-                    SELECT f.* FROM files f
-                    INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
-                    GROUP BY f.path
-                    ORDER BY {orderByColumn} {orderByDir}
-                    LIMIT @Limit OFFSET @Offset
-                    """;
-                countSql = $"""
-                    SELECT COUNT(DISTINCT f.path) FROM files f
-                    INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
-                    """;
-            }
-            else
-            {
-                sql = $"""
-                    SELECT f.* FROM files f
-                    INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
-                    ORDER BY {orderByColumn} {orderByDir}
-                    LIMIT @Limit OFFSET @Offset
-                    """;
-                countSql = $"""
-                    SELECT COUNT(*) FROM files f
-                    INNER JOIN files_fts fts ON f.id = fts.rowid
-                    WHERE files_fts MATCH @Query AND {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}
-                    """;
-            }
-
-            var results = await connection.QueryAsync<IndexedFileDto>(sql, parameters);
-            var total = await connection.ExecuteScalarAsync<int>(countSql, parameters);
-
-            sw.Stop();
-            return new SearchResult
-            {
-                Files = results.Select(MapToIndexedFile).ToList(),
-                TotalCount = total,
-                SearchDuration = sw.Elapsed
-            };
         }
-        else
+
+        var extensionList = extensionFilter?.ToList();
+        if (extensionList is { Count: > 0 })
         {
-            string sql;
-            string countSql;
-
-            if (needsDedup)
-            {
-                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause} GROUP BY f.path ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(DISTINCT f.path) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}";
-            }
-            else
-            {
-                sql = $"SELECT * FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
-                countSql = $"SELECT COUNT(*) FROM files f WHERE {collectionClause} AND {extensionClause} AND {directoryClause} AND {isDirClause}";
-            }
-
-            var allFiles = await connection.QueryAsync<IndexedFileDto>(sql, parameters);
-            var totalCount = await connection.ExecuteScalarAsync<int>(countSql, parameters);
-
-            sw.Stop();
-            return new SearchResult
-            {
-                Files = allFiles.Select(MapToIndexedFile).ToList(),
-                TotalCount = totalCount,
-                SearchDuration = sw.Elapsed
-            };
+            where.Add($"f.extension IN ({string.Join(",", extensionList.Select((_, i) => $"@Ext{i}"))})");
+            for (var i = 0; i < extensionList.Count; i++)
+                parameters.Add($"Ext{i}", extensionList[i]);
         }
+
+        if (directoryFilter != null)
+        {
+            where.Add("f.directory = @DirectoryPath");
+            parameters.Add("DirectoryPath", directoryFilter);
+        }
+
+        if (showDirectories.HasValue)
+        {
+            where.Add(showDirectories.Value ? "f.is_directory = 1" : "f.is_directory = 0");
+        }
+
+        var orderByColumn = sortColumn switch
+        {
+            SortColumn.Name => "f.name",
+            SortColumn.Directory => "f.directory",
+            SortColumn.Extension => "f.extension",
+            SortColumn.Size => "f.size_bytes",
+            SortColumn.ModifiedAt => "f.modified_at_utc",
+            SortColumn.Rank when isSearch => "rank",
+            _ => "f.name"
+        };
+        var orderByDir = sortDirection == SortDirection.Desc ? "DESC" : "ASC";
+
+        // Deduplicate by path when showing all or multiple collections.
+        var whereSql = string.Join(" AND ", where);
+        var groupBy = scope.NeedsDedup ? "GROUP BY f.path" : "";
+        var countExpr = scope.NeedsDedup ? "COUNT(DISTINCT f.path)" : "COUNT(*)";
+        var sql = $"SELECT f.* FROM {from} WHERE {whereSql} {groupBy} ORDER BY {orderByColumn} {orderByDir} LIMIT @Limit OFFSET @Offset";
+        var countSql = $"SELECT {countExpr} FROM {from} WHERE {whereSql}";
+
+        using var connection = CreateConnection();
+        var files = await connection.QueryAsync<IndexedFileDto>(new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+        var total = await connection.ExecuteScalarAsync<int>(new CommandDefinition(countSql, parameters, cancellationToken: cancellationToken));
+
+        return new SearchResult
+        {
+            Files = files.Select(MapToIndexedFile).ToList(),
+            TotalCount = total,
+            SearchDuration = sw.Elapsed
+        };
     }
 
     // Builds an FTS5 MATCH expression from raw user input.
     // The unicode61 tokenizer strips punctuation and splits on non-alphanumeric chars,
     // so "D&D" is indexed as two adjacent tokens "d" and "d". We replicate this splitting:
-    // - Simple words like "animist" become prefix searches: animist*
+    // - Simple words like "animist" become quoted prefix searches: "animist"*
+    //   (quoting stops FTS5 from reading AND/OR/NOT/NEAR as operators)
     // - Words with punctuation like "d&d" are split into sub-tokens ("d","d")
     //   and combined with NEAR(..., 0) to require them adjacent, matching the original text.
+    // Tokens are letters/digits only, so they never contain a double quote to escape.
     // Returns an empty string when the input yields no usable tokens (e.g. only punctuation),
     // so callers can avoid issuing an invalid empty MATCH.
     internal static string BuildFtsQuery(string query)
@@ -400,111 +346,45 @@ public class IndexDbContext : IDisposable
             else if (tokens.Count == 1)
             {
                 // Single token: prefix search to match partial words
-                // e.g. "anim" -> anim*  (matches "animist", "animation", etc.)
-                ftsTerms.Add($"{tokens[0]}*");
+                // e.g. "anim" -> "anim"*  (matches "animist", "animation", etc.)
+                ftsTerms.Add($"\"{tokens[0]}\"*");
             }
         }
         return string.Join(" ", ftsTerms);
     }
 
-    public async Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
-    {
-        return await SearchWithSortAsync(query, SortColumn.ModifiedAt, SortDirection.Desc, limit, offset, collectionIds);
-    }
+    public Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null) =>
+        SearchWithSortAsync(query, SortColumn.ModifiedAt, SortDirection.Desc, limit, offset, collectionIds);
 
-    public async Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
+    public Task<SearchResult> SearchByExtensionAsync(string extension, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null)
     {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-
         var normalizedExt = extension.StartsWith('.') ? extension.ToLowerInvariant() : $".{extension.ToLowerInvariant()}";
-        var collectionIdList = collectionIds?.ToList();
-        var hasCollectionFilter = collectionIdList != null && collectionIdList.Count > 0;
-        var needsDedup = !hasCollectionFilter || collectionIdList!.Count > 1;
-
-        var collectionClause = hasCollectionFilter
-            ? $"collection_id IN ({string.Join(",", collectionIdList!)})"
-            : "1=1";
-
-        string sql;
-        string countSql;
-
-        if (needsDedup)
-        {
-            sql = $"SELECT * FROM files WHERE extension = @Extension AND {collectionClause} GROUP BY path ORDER BY modified_at_utc DESC LIMIT @Limit OFFSET @Offset";
-            countSql = $"SELECT COUNT(DISTINCT path) FROM files WHERE extension = @Extension AND {collectionClause}";
-        }
-        else
-        {
-            sql = $"SELECT * FROM files WHERE extension = @Extension AND {collectionClause} ORDER BY modified_at_utc DESC LIMIT @Limit OFFSET @Offset";
-            countSql = $"SELECT COUNT(*) FROM files WHERE extension = @Extension AND {collectionClause}";
-        }
-
-        using var connection = CreateConnection();
-        var files = await connection.QueryAsync<IndexedFileDto>(sql,
-            new { Extension = normalizedExt, Limit = limit, Offset = offset });
-        var total = await connection.ExecuteScalarAsync<int>(countSql, new { Extension = normalizedExt });
-
-        sw.Stop();
-        return new SearchResult
-        {
-            Files = files.Select(MapToIndexedFile).ToList(),
-            TotalCount = total,
-            SearchDuration = sw.Elapsed
-        };
+        return SearchWithSortAsync("", SortColumn.ModifiedAt, SortDirection.Desc, limit, offset, collectionIds, [normalizedExt]);
     }
 
     public async Task<IndexStats> GetStatsAsync(IEnumerable<int>? collectionIds = null)
     {
-        var stats = new IndexStats();
-        var collectionIdList = collectionIds?.ToList();
-        var hasCollectionFilter = collectionIdList != null && collectionIdList.Count > 0;
-        var needsDedup = !hasCollectionFilter || collectionIdList!.Count > 1;
-
-        var collectionClause = hasCollectionFilter
-            ? $"collection_id IN ({string.Join(",", collectionIdList!)})"
-            : "1=1";
-
+        var scope = CollectionScope.From(collectionIds);
         using var connection = CreateConnection();
 
-        if (needsDedup)
+        // When several collections are shown, a path indexed in more than one of them is counted
+        // once (SQLite takes the bare columns from the row holding the MAX).
+        var rows = scope.NeedsDedup
+            ? $"(SELECT path, size_bytes, extension, MAX(indexed_at_utc) AS indexed_at_utc FROM files f WHERE {scope.Clause} GROUP BY path)"
+            : $"(SELECT path, size_bytes, extension, indexed_at_utc FROM files f WHERE {scope.Clause})";
+
+        var totals = await connection.QuerySingleAsync<(long Count, long Size, string? LastIndexed)>(
+            $"SELECT COUNT(*), COALESCE(SUM(size_bytes), 0), MAX(indexed_at_utc) FROM {rows}");
+        var extensions = await connection.QueryAsync<(string Extension, int Count)>(
+            $"SELECT extension, COUNT(*) AS Count FROM {rows} GROUP BY extension ORDER BY Count DESC LIMIT 20");
+
+        return new IndexStats
         {
-            // Count unique paths when showing all or multiple collections
-            stats.TotalFiles = await connection.ExecuteScalarAsync<int>(
-                $"SELECT COUNT(DISTINCT path) FROM files WHERE {collectionClause}");
-            // For size, we need to avoid double-counting - use subquery to get distinct paths first
-            stats.TotalSizeBytes = await connection.ExecuteScalarAsync<long>(
-                $"SELECT COALESCE(SUM(size_bytes), 0) FROM (SELECT path, size_bytes FROM files WHERE {collectionClause} GROUP BY path)");
-        }
-        else
-        {
-            stats.TotalFiles = await connection.ExecuteScalarAsync<int>(
-                $"SELECT COUNT(*) FROM files WHERE {collectionClause}");
-            stats.TotalSizeBytes = await connection.ExecuteScalarAsync<long>(
-                $"SELECT COALESCE(SUM(size_bytes), 0) FROM files WHERE {collectionClause}");
-        }
-
-        var lastIndexed = await connection.ExecuteScalarAsync<string?>(
-            $"SELECT MAX(indexed_at_utc) FROM files WHERE {collectionClause}");
-        if (!string.IsNullOrEmpty(lastIndexed))
-        {
-            stats.LastIndexedAtUtc = DateTime.Parse(lastIndexed);
-        }
-
-        string extensionSql = needsDedup
-            ? $"SELECT extension, COUNT(DISTINCT path) as Count FROM files WHERE {collectionClause} GROUP BY extension ORDER BY Count DESC LIMIT 20"
-            : $"SELECT extension, COUNT(*) as Count FROM files WHERE {collectionClause} GROUP BY extension ORDER BY Count DESC LIMIT 20";
-
-        var extensions = await connection.QueryAsync<(string Extension, int Count)>(extensionSql);
-        stats.FilesByExtension = extensions.ToDictionary(e => e.Extension, e => e.Count);
-
-        return stats;
-    }
-
-    public async Task ClearAsync()
-    {
-        using var connection = CreateConnection();
-        await connection.ExecuteAsync("DELETE FROM files");
-        await connection.ExecuteAsync("DELETE FROM files_fts");
+            TotalFiles = (int)totals.Count,
+            TotalSizeBytes = totals.Size,
+            LastIndexedAtUtc = ParseUtcOrNull(totals.LastIndexed),
+            FilesByExtension = extensions.ToDictionary(e => e.Extension, e => e.Count)
+        };
     }
 
     public async Task ClearCollectionAsync(int collectionId)
@@ -515,23 +395,39 @@ public class IndexDbContext : IDisposable
             new { CollectionId = collectionId });
     }
 
-    public async Task<bool> FileExistsAsync(string path, DateTime modifiedAtUtc)
+    // Path -> modified timestamp (round-trip string) of every row of a collection. Loaded once
+    // per scan so incremental scans compare in memory instead of issuing one query per file.
+    public async Task<Dictionary<string, string>> GetCollectionFileStampsAsync(int collectionId)
     {
         using var connection = CreateConnection();
-        var result = await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM files WHERE path = @Path AND modified_at_utc = @ModifiedAtUtc",
-            new { Path = path, ModifiedAtUtc = modifiedAtUtc.ToString("O") });
-        return result > 0;
+        var rows = await connection.QueryAsync<(string Path, string Modified)>(
+            "SELECT path, modified_at_utc FROM files WHERE collection_id = @CollectionId",
+            new { CollectionId = collectionId });
+        return rows.ToDictionary(r => r.Path, r => r.Modified, StringComparer.Ordinal);
     }
 
-    public async Task<bool> FileExistsInCollectionAsync(string path, int collectionId, DateTime modifiedAtUtc)
+    public async Task<int> DeleteCollectionFilesByPathsAsync(int collectionId, IEnumerable<string> paths)
     {
+        var deleted = 0;
         using var connection = CreateConnection();
-        var result = await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM files WHERE path = @Path AND collection_id = @CollectionId AND modified_at_utc = @ModifiedAtUtc",
-            new { Path = path, CollectionId = collectionId, ModifiedAtUtc = modifiedAtUtc.ToString("O") });
-        return result > 0;
+        // Stay well under SQLite's bound-parameter limit.
+        foreach (var chunk in paths.Chunk(500))
+        {
+            using var tx = connection.BeginTransaction();
+            deleted += await connection.ExecuteAsync(
+                "DELETE FROM files WHERE collection_id = @CollectionId AND path IN @Paths",
+                new { CollectionId = collectionId, Paths = chunk }, tx);
+            tx.Commit();
+        }
+        return deleted;
     }
+
+    public static string FormatUtc(DateTime value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+
+    private static DateTime ParseUtc(string value) =>
+        DateTime.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal);
+
+    private static DateTime? ParseUtcOrNull(string? value) => string.IsNullOrEmpty(value) ? null : ParseUtc(value);
 
     public void Dispose()
     {
@@ -558,14 +454,63 @@ public class IndexDbContext : IDisposable
         return dtos.Select(MapToIndexedFile).ToList();
     }
 
-    public async Task UpdateFilePathAsync(long id, string newPath, string newDirectory, string newName, string newExtension)
+    // Rewrites every row (in all collections) for a file or folder that moved on disk from
+    // oldPath to newPath, including all rows below it when it is a folder. Rows already indexed
+    // at the destination are dropped first: they describe what the move just replaced.
+    public async Task MovePathAsync(string oldPath, string newPath)
     {
+        var oldPrefix = oldPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var newPrefix = newPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var newName = Path.GetFileName(newPath.TrimEnd(Path.DirectorySeparatorChar));
+        var p = new
+        {
+            OldPath = oldPath,
+            NewPath = newPath,
+            OldPrefix = oldPrefix,
+            OldPrefixLen = oldPrefix.Length,
+            NewPrefix = newPrefix,
+            NewPrefixLen = newPrefix.Length,
+            NewName = newName,
+            NewDirectory = Path.GetDirectoryName(newPath) ?? "",
+            NewExtension = Path.GetExtension(newName).ToLowerInvariant()
+        };
+
         using var connection = CreateConnection();
+        using var tx = connection.BeginTransaction();
+        await connection.ExecuteAsync(
+            "DELETE FROM files WHERE path = @NewPath OR substr(path, 1, @NewPrefixLen) = @NewPrefix", p, tx);
         await connection.ExecuteAsync("""
             UPDATE files
-            SET path = @Path, directory = @Directory, name = @Name, extension = @Extension
-            WHERE id = @Id
-            """, new { Id = id, Path = newPath, Directory = newDirectory, Name = newName, Extension = newExtension });
+            SET path = @NewPath, directory = @NewDirectory, name = @NewName,
+                extension = CASE WHEN is_directory = 1 THEN '' ELSE @NewExtension END
+            WHERE path = @OldPath
+            """, p, tx);
+        // Descendants: swap the old folder prefix for the new one in both path and directory.
+        await connection.ExecuteAsync("""
+            UPDATE files
+            SET path = @NewPrefix || substr(path, @OldPrefixLen + 1),
+                directory = CASE
+                    WHEN directory = @OldPath THEN @NewPath
+                    ELSE @NewPrefix || substr(directory, @OldPrefixLen + 1)
+                END
+            WHERE substr(path, 1, @OldPrefixLen) = @OldPrefix
+            """, p, tx);
+        tx.Commit();
+    }
+
+    // Removes every row (in all collections) for the given paths and anything below them.
+    public async Task DeletePathsAsync(IEnumerable<string> paths)
+    {
+        using var connection = CreateConnection();
+        using var tx = connection.BeginTransaction();
+        foreach (var path in paths)
+        {
+            var prefix = path.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            await connection.ExecuteAsync(
+                "DELETE FROM files WHERE path = @Path OR substr(path, 1, @PrefixLen) = @Prefix",
+                new { Path = path, Prefix = prefix, PrefixLen = prefix.Length }, tx);
+        }
+        tx.Commit();
     }
 
     public async Task DeleteFilesByIdsAsync(IEnumerable<long> ids)
@@ -579,87 +524,90 @@ public class IndexDbContext : IDisposable
     }
 
     // Collection methods
-    public async Task<List<Collection>> GetCollectionsAsync()
-    {
-        List<CollectionDto> collections;
-        using (var connection = CreateConnection())
-        {
-            collections = (await connection.QueryAsync<CollectionDto>(
-                "SELECT * FROM collections ORDER BY name")).ToList();
-        }
+    private const string CollectionSelect = """
+        SELECT c.*,
+               (SELECT COUNT(*) FROM files f WHERE f.collection_id = c.id) AS File_Count,
+               (SELECT MAX(indexed_at_utc) FROM files f WHERE f.collection_id = c.id) AS Last_Indexed_At_Utc
+        FROM collections c
+        """;
 
-        var result = new List<Collection>();
-        foreach (var dto in collections)
+    public Task<List<Collection>> GetCollectionsAsync() =>
+        QueryCollectionsAsync($"{CollectionSelect} ORDER BY c.name", null);
+
+    public async Task<Collection?> GetCollectionByIdAsync(int id) =>
+        (await QueryCollectionsAsync($"{CollectionSelect} WHERE c.id = @Id", id)).SingleOrDefault();
+
+    // Loads collections with their stats and paths in two queries instead of three per collection.
+    private async Task<List<Collection>> QueryCollectionsAsync(string sql, int? id)
+    {
+        using var connection = CreateConnection();
+        var dtos = (await connection.QueryAsync<CollectionDto>(sql, new { Id = id })).ToList();
+        if (dtos.Count == 0) return new List<Collection>();
+
+        var paths = (await connection.QueryAsync<CollectionPathDto>(
+                "SELECT * FROM collection_paths WHERE collection_id IN @Ids ORDER BY id",
+                new { Ids = dtos.Select(d => d.Id) }))
+            .Select(MapToCollectionPath)
+            .ToLookup(p => p.CollectionId);
+
+        return dtos.Select(dto =>
         {
             var collection = MapToCollection(dto);
-            collection.Paths = await GetCollectionPathsAsync(collection.Id);
-            var stats = await GetCollectionStatsAsync(collection.Id);
-            collection.FileCount = stats.FileCount;
-            collection.LastIndexedAtUtc = stats.LastIndexedAtUtc;
-            result.Add(collection);
-        }
-        return result;
+            collection.Paths = paths[collection.Id].ToList();
+            collection.FileCount = (int)dto.File_Count;
+            collection.LastIndexedAtUtc = ParseUtcOrNull(dto.Last_Indexed_At_Utc);
+            return collection;
+        }).ToList();
     }
 
-    public async Task<Collection?> GetCollectionByIdAsync(int id)
+    // Creates the collection and its paths atomically: an import never leaves a half-created one.
+    public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = "__MACOSX", IEnumerable<string>? paths = null)
     {
-        CollectionDto? dto;
-        using (var connection = CreateConnection())
-        {
-            dto = await connection.QuerySingleOrDefaultAsync<CollectionDto>(
-                "SELECT * FROM collections WHERE id = @Id", new { Id = id });
-        }
-        if (dto == null) return null;
-
-        var collection = MapToCollection(dto);
-        collection.Paths = await GetCollectionPathsAsync(id);
-        var stats = await GetCollectionStatsAsync(id);
-        collection.FileCount = stats.FileCount;
-        collection.LastIndexedAtUtc = stats.LastIndexedAtUtc;
-        return collection;
-    }
-
-    public async Task<Collection> CreateCollectionAsync(string name, string? description, string excludedDirectories = "__MACOSX")
-    {
-        var now = DateTime.UtcNow.ToString("O");
+        var now = DateTime.UtcNow;
         using var connection = CreateConnection();
+        using var tx = connection.BeginTransaction();
         var id = await connection.ExecuteScalarAsync<int>("""
             INSERT INTO collections (name, description, created_at_utc, excluded_directories)
             VALUES (@Name, @Description, @CreatedAtUtc, @ExcludedDirectories);
             SELECT last_insert_rowid();
-            """, new { Name = name, Description = description, CreatedAtUtc = now, ExcludedDirectories = excludedDirectories });
+            """, new { Name = name, Description = description, CreatedAtUtc = FormatUtc(now), ExcludedDirectories = excludedDirectories }, tx);
 
-        return new Collection
+        var collection = new Collection
         {
             Id = id,
             Name = name,
             Description = description,
             ExcludedDirectories = excludedDirectories,
-            CreatedAtUtc = DateTime.Parse(now)
+            CreatedAtUtc = now
         };
+
+        foreach (var path in paths ?? [])
+        {
+            var pathId = await connection.ExecuteScalarAsync<int>(
+                "INSERT INTO collection_paths (collection_id, path) VALUES (@CollectionId, @Path); SELECT last_insert_rowid();",
+                new { CollectionId = id, Path = path }, tx);
+            collection.Paths.Add(new CollectionPath { Id = pathId, CollectionId = id, Path = path });
+        }
+
+        tx.Commit();
+        return collection;
     }
 
     public async Task UpdateCollectionAsync(int id, string name, string? description, string? excludedDirectories = null)
     {
         using var connection = CreateConnection();
-        if (excludedDirectories != null)
-        {
-            await connection.ExecuteAsync(
-                "UPDATE collections SET name = @Name, description = @Description, excluded_directories = @ExcludedDirectories WHERE id = @Id",
-                new { Id = id, Name = name, Description = description, ExcludedDirectories = excludedDirectories });
-        }
-        else
-        {
-            await connection.ExecuteAsync(
-                "UPDATE collections SET name = @Name, description = @Description WHERE id = @Id",
-                new { Id = id, Name = name, Description = description });
-        }
+        await connection.ExecuteAsync("""
+            UPDATE collections
+            SET name = @Name, description = @Description,
+                excluded_directories = COALESCE(@ExcludedDirectories, excluded_directories)
+            WHERE id = @Id
+            """, new { Id = id, Name = name, Description = description, ExcludedDirectories = excludedDirectories });
     }
 
     public async Task DeleteCollectionAsync(int id)
     {
         using var connection = CreateConnection();
-        // CASCADE will delete collection_paths and files
+        // CASCADE (foreign_keys=ON) deletes collection_paths and files
         await connection.ExecuteAsync("DELETE FROM collections WHERE id = @Id", new { Id = id });
     }
 
@@ -667,14 +615,9 @@ public class IndexDbContext : IDisposable
     {
         using var connection = CreateConnection();
         var paths = await connection.QueryAsync<CollectionPathDto>(
-            "SELECT * FROM collection_paths WHERE collection_id = @CollectionId",
+            "SELECT * FROM collection_paths WHERE collection_id = @CollectionId ORDER BY id",
             new { CollectionId = collectionId });
-        return paths.Select(p => new CollectionPath
-        {
-            Id = (int)p.Id,
-            CollectionId = (int)p.Collection_Id,
-            Path = p.Path
-        }).ToList();
+        return paths.Select(MapToCollectionPath).ToList();
     }
 
     public async Task<CollectionPath> AddCollectionPathAsync(int collectionId, string path)
@@ -721,8 +664,7 @@ public class IndexDbContext : IDisposable
             var normalizedExisting = NormalizePath(existing.Path);
 
             // Check if new path is under existing path (existing is parent)
-            if (normalizedNewPath.StartsWith(normalizedExisting + Path.DirectorySeparatorChar) ||
-                normalizedNewPath == normalizedExisting)
+            if (PathHelper.IsSameOrUnder(normalizedNewPath, normalizedExisting))
             {
                 overlaps.Add(new PathOverlap
                 {
@@ -733,7 +675,7 @@ public class IndexDbContext : IDisposable
                 });
             }
             // Check if existing path is under new path (new is parent)
-            else if (normalizedExisting.StartsWith(normalizedNewPath + Path.DirectorySeparatorChar))
+            else if (PathHelper.IsSameOrUnder(normalizedExisting, normalizedNewPath))
             {
                 overlaps.Add(new PathOverlap
                 {
@@ -750,26 +692,27 @@ public class IndexDbContext : IDisposable
     public async Task<(int FileCount, DateTime? LastIndexedAtUtc)> GetCollectionStatsAsync(int collectionId)
     {
         using var connection = CreateConnection();
-        var fileCount = await connection.ExecuteScalarAsync<int>(
-            "SELECT COUNT(*) FROM files WHERE collection_id = @CollectionId",
+        var stats = await connection.QuerySingleAsync<(long Count, string? LastIndexed)>(
+            "SELECT COUNT(*), MAX(indexed_at_utc) FROM files WHERE collection_id = @CollectionId",
             new { CollectionId = collectionId });
-
-        var lastIndexed = await connection.ExecuteScalarAsync<string?>(
-            "SELECT MAX(indexed_at_utc) FROM files WHERE collection_id = @CollectionId",
-            new { CollectionId = collectionId });
-
-        DateTime? lastIndexedAtUtc = null;
-        if (!string.IsNullOrEmpty(lastIndexed))
-        {
-            lastIndexedAtUtc = DateTime.Parse(lastIndexed);
-        }
-
-        return (fileCount, lastIndexedAtUtc);
+        return ((int)stats.Count, ParseUtcOrNull(stats.LastIndexed));
     }
 
     private static string NormalizePath(string path)
     {
         return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    }
+
+    // Collection filter shared by search and stats. Ids are ints, so inlining them is injection-safe.
+    private readonly record struct CollectionScope(string Clause, bool NeedsDedup)
+    {
+        public static CollectionScope From(IEnumerable<int>? collectionIds)
+        {
+            var ids = collectionIds?.ToList();
+            return ids is { Count: > 0 }
+                ? new CollectionScope($"f.collection_id IN ({string.Join(",", ids)})", ids.Count > 1)
+                : new CollectionScope("1=1", true);
+        }
     }
 
     private static Collection MapToCollection(CollectionDto dto) => new()
@@ -778,7 +721,14 @@ public class IndexDbContext : IDisposable
         Name = dto.Name,
         Description = dto.Description,
         ExcludedDirectories = dto.Excluded_Directories ?? "__MACOSX",
-        CreatedAtUtc = DateTime.Parse(dto.Created_At_Utc)
+        CreatedAtUtc = ParseUtc(dto.Created_At_Utc)
+    };
+
+    private static CollectionPath MapToCollectionPath(CollectionPathDto p) => new()
+    {
+        Id = (int)p.Id,
+        CollectionId = (int)p.Collection_Id,
+        Path = p.Path
     };
 
     private class CollectionDto
@@ -788,6 +738,8 @@ public class IndexDbContext : IDisposable
         public string? Description { get; set; }
         public string Created_At_Utc { get; set; } = "";
         public string Excluded_Directories { get; set; } = "__MACOSX";
+        public long File_Count { get; set; }
+        public string? Last_Indexed_At_Utc { get; set; }
     }
 
     private class CollectionPathDto
@@ -797,7 +749,7 @@ public class IndexDbContext : IDisposable
         public string Path { get; set; } = "";
     }
 
-    // DTO pour le mapping Dapper
+    // DTO for Dapper mapping
     private class IndexedFileDto
     {
         public long Id { get; set; }
@@ -823,8 +775,8 @@ public class IndexDbContext : IDisposable
         Extension = dto.Extension,
         SizeBytes = dto.Size_Bytes,
         IsDirectory = dto.Is_Directory != 0,
-        CreatedAtUtc = DateTime.Parse(dto.Created_At_Utc),
-        ModifiedAtUtc = DateTime.Parse(dto.Modified_At_Utc),
-        IndexedAtUtc = DateTime.Parse(dto.Indexed_At_Utc)
+        CreatedAtUtc = ParseUtc(dto.Created_At_Utc),
+        ModifiedAtUtc = ParseUtc(dto.Modified_At_Utc),
+        IndexedAtUtc = ParseUtc(dto.Indexed_At_Utc)
     };
 }

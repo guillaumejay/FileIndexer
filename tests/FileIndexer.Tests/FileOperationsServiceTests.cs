@@ -81,7 +81,7 @@ public class FileOperationsServiceTests : IDisposable
             };
         }).ToList();
 
-        await _db.InsertFilesAsync(records);
+        await _db.UpsertFilesAsync(records);
 
         var all = await _db.SearchAsync("");
         return paths.Select(p => all.Files.First(f => f.Path == p).Id).ToList();
@@ -276,6 +276,140 @@ public class FileOperationsServiceTests : IDisposable
         Assert.NotNull(result.ErrorMessage);
     }
 
+    // --- Same-folder targets (data-loss regressions) -----------------------------------------
+
+    [Fact]
+    public async Task Copy_IntoOwnFolder_MakesSiblingCopyAndKeepsSource()
+    {
+        await InitCollection();
+        var src = Dir("src");
+        var file = WriteFile(src, "a.txt", "original");
+        var ids = await Index(file);
+
+        // Replace would previously delete the source itself before copying it.
+        var result = await NewService().CopyFilesAsync(ids, src, Always(ConflictResolution.Replace));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("original", File.ReadAllText(file));
+        Assert.Equal("original", File.ReadAllText(Path.Combine(src, "a (1).txt")));
+        Assert.Equal(2, (await AllIndexed()).Count);
+    }
+
+    [Fact]
+    public async Task Move_IntoOwnFolder_IsNoOpAndKeepsSource()
+    {
+        await InitCollection();
+        var src = Dir("src");
+        var file = WriteFile(src, "a.txt", "original");
+        var ids = await Index(file);
+
+        var result = await NewService().MoveFilesAsync(ids, src, Always(ConflictResolution.Replace));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.SkippedCount);
+        Assert.Equal("original", File.ReadAllText(file));
+        Assert.Equal(file, Assert.Single(await AllIndexed()).Path);
+    }
+
+    [Fact]
+    public async Task Move_Replace_OverwritesTargetAndLeavesSingleIndexRow()
+    {
+        await InitCollection();
+        var src = Dir("src");
+        var dest = Dir("dest");
+        var ids = await Index(WriteFile(src, "a.txt", "new"));
+        var target = WriteFile(dest, "a.txt", "old");
+        await Index(target);
+
+        var result = await NewService().MoveFilesAsync(ids, dest, Always(ConflictResolution.Replace));
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal("new", File.ReadAllText(target));
+        Assert.Equal(target, Assert.Single(await AllIndexed()).Path);
+    }
+
+    // --- Folders -----------------------------------------------------------------------------
+
+    // Indexes a folder and everything below it, like the scanner does.
+    private async Task<long> IndexTree(string folder)
+    {
+        var dir = new DirectoryInfo(folder);
+        var entries = new FileSystemInfo[] { dir }.Concat(dir.EnumerateFileSystemInfos("*", SearchOption.AllDirectories));
+        await _db.UpsertFilesAsync(entries.Select(e => IndexedFile.FromFileSystemInfo(e, _collectionId)));
+        return (await AllIndexed()).Single(f => f.Path == folder).Id;
+    }
+
+    [Fact]
+    public async Task Delete_Folder_TrashesItAndDropsItsContentFromIndex()
+    {
+        await InitCollection();
+        var folder = Dir("folder");
+        WriteFile(folder, "inner.txt");
+        var id = await IndexTree(folder);
+
+        var result = await NewService().DeleteFilesAsync([id]);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(1, result.SuccessCount);
+        Assert.Equal(folder, Assert.Single(_trash.Trashed));
+        Assert.Empty(await AllIndexed());
+    }
+
+    [Fact]
+    public async Task Rename_Folder_RewritesDescendantPaths()
+    {
+        await InitCollection();
+        var folder = Dir("old");
+        Directory.CreateDirectory(Path.Combine(folder, "sub"));
+        WriteFile(Path.Combine(folder, "sub"), "deep.txt");
+        var id = await IndexTree(folder);
+
+        var result = await NewService().RenameFileAsync(id, "new", NeverConflict);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        var renamed = Path.Combine(_root, "new");
+        var deep = Path.Combine(renamed, "sub", "deep.txt");
+        Assert.True(File.Exists(deep));
+        var indexed = await AllIndexed();
+        Assert.Equal(3, indexed.Count);
+        var deepRow = indexed.Single(f => f.Name == "deep.txt");
+        Assert.Equal(deep, deepRow.Path);
+        Assert.Equal(Path.Combine(renamed, "sub"), deepRow.Directory);
+        Assert.All(indexed, f => Assert.StartsWith(renamed, f.Path));
+    }
+
+    [Fact]
+    public async Task Move_FolderIntoItself_FailsWithoutTouchingDisk()
+    {
+        await InitCollection();
+        var folder = Dir("folder");
+        var sub = Directory.CreateDirectory(Path.Combine(folder, "sub")).FullName;
+        var id = await IndexTree(folder);
+
+        var result = await NewService().MoveFilesAsync([id], sub, NeverConflict);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(1, result.FailureCount);
+        Assert.True(Directory.Exists(sub));
+    }
+
+    [Fact]
+    public async Task Copy_Folder_CopiesAndIndexesContent()
+    {
+        await InitCollection();
+        var folder = Dir("folder");
+        WriteFile(folder, "inner.txt", "data");
+        var dest = Dir("dest");
+        var id = await IndexTree(folder);
+
+        var result = await NewService().CopyFilesAsync([id], dest, NeverConflict);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        var copied = Path.Combine(dest, "folder", "inner.txt");
+        Assert.Equal("data", File.ReadAllText(copied));
+        Assert.Contains(await AllIndexed(), f => f.Path == copied);
+    }
+
     // --- Fake trash service ------------------------------------------------------------------
 
     private sealed class FakeTrashService : ITrashService
@@ -291,6 +425,9 @@ public class FileOperationsServiceTests : IDisposable
                 return Task.FromResult(OperationResult.Failure($"trash refused {path}"));
             }
             Trashed.Add(path);
+            // Behave like a real trash: the item leaves its original location.
+            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
+            else if (File.Exists(path)) File.Delete(path);
             return Task.FromResult(OperationResult.Success());
         }
     }

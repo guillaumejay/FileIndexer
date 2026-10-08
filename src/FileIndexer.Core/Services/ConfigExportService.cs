@@ -33,6 +33,7 @@ public class ConfigExportService
             {
                 Name = c.Name,
                 Description = c.Description,
+                ExcludedDirectories = c.ExcludedDirectories,
                 Paths = c.Paths.Select(p => p.Path).ToList()
             }).ToList()
         };
@@ -81,14 +82,8 @@ public class ConfigExportService
                 result.Details.Add($"Renamed: \"{exported.Name}\" -> \"{name}\"");
             }
 
-            var collection = await _db.CreateCollectionAsync(name, exported.Description);
+            await _db.CreateCollectionAsync(name, exported.Description, exported.ExcludedDirectories ?? "__MACOSX", exported.Paths);
             existingNames.Add(name);
-
-            foreach (var path in exported.Paths)
-            {
-                await _db.AddCollectionPathAsync(collection.Id, path);
-            }
-
             result.Imported++;
         }
 

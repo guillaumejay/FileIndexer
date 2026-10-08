@@ -64,28 +64,22 @@ public class ArchiveService
                 }
 
                 // Analyze root level structure
-                var hasSingleRootFolder = HasSingleRootFolder(archive);
+                var singleRootFolder = GetSingleRootFolder(archive);
                 string extractDir;
 
-                if (hasSingleRootFolder)
+                if (singleRootFolder != null && !Path.Exists(Path.Combine(archiveDir, singleRootFolder)))
                 {
-                    // Extract at the same level as the archive (the single root folder acts as container)
+                    // Extract at the same level as the archive (the single root folder acts as container).
+                    // Only when that folder does not exist yet: never overwrite an existing one.
                     extractDir = archiveDir;
                 }
                 else
                 {
                     // Create a folder named after the archive
                     extractDir = Path.Combine(archiveDir, archiveNameWithoutExt);
-                    if (Directory.Exists(extractDir))
+                    if (Path.Exists(extractDir))
                     {
-                        // Generate unique name
-                        var counter = 1;
-                        var baseName = extractDir;
-                        while (Directory.Exists(extractDir))
-                        {
-                            extractDir = $"{baseName} ({counter})";
-                            counter++;
-                        }
+                        extractDir = Path.Combine(archiveDir, PathHelper.GenerateUniqueName(archiveDir, archiveNameWithoutExt, isDirectory: true));
                     }
                     Directory.CreateDirectory(extractDir);
                 }
@@ -151,7 +145,8 @@ public class ArchiveService
         }
     }
 
-    private static bool HasSingleRootFolder(IArchive archive)
+    // Name of the only top-level folder when every entry lives under it, otherwise null.
+    private static string? GetSingleRootFolder(IArchive archive)
     {
         var rootEntries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -164,21 +159,22 @@ public class ArchiveService
             rootEntries.Add(firstSegment);
 
             if (rootEntries.Count > 1)
-                return false;
+                return null;
         }
 
         // Single root and it must be a directory (has entries inside it)
         if (rootEntries.Count == 1)
         {
             var root = rootEntries.First();
-            return archive.Entries.Any(e =>
+            var isFolder = archive.Entries.Any(e =>
             {
                 var key = e.Key?.Replace('\\', '/').TrimStart('/');
                 return key != null && key.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase);
             });
+            return isFolder ? root : null;
         }
 
-        return false;
+        return null;
     }
 
     private static string GetArchiveNameWithoutExtension(string path)

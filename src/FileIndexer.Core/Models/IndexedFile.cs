@@ -31,8 +31,32 @@ public class IndexedFile
     public DateTime IndexedAtUtc { get; set; }
     
     public string SizeFormatted => FormatSize(SizeBytes);
-    
-    private static string FormatSize(long bytes) => bytes switch
+
+    // Builds the index entry for a file or folder found on disk.
+    public static IndexedFile FromFileSystemInfo(FileSystemInfo info, int collectionId)
+    {
+        var isDirectory = info is DirectoryInfo;
+        return new IndexedFile
+        {
+            CollectionId = collectionId,
+            Name = info.Name,
+            Path = info.FullName,
+            Directory = info switch
+            {
+                FileInfo file => file.DirectoryName ?? "",
+                DirectoryInfo dir => dir.Parent?.FullName ?? "",
+                _ => ""
+            },
+            Extension = isDirectory ? "" : info.Extension.ToLowerInvariant(),
+            SizeBytes = info is FileInfo f ? f.Length : 0,
+            IsDirectory = isDirectory,
+            CreatedAtUtc = info.CreationTimeUtc,
+            ModifiedAtUtc = info.LastWriteTimeUtc,
+            IndexedAtUtc = DateTime.UtcNow
+        };
+    }
+
+    public static string FormatSize(long bytes) => bytes switch
     {
         < 1024 => $"{bytes} B",
         < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
@@ -55,13 +79,7 @@ public class IndexStats
     public Dictionary<string, int> FilesByExtension { get; set; } = new();
     public DateTime? LastIndexedAtUtc { get; set; }
     
-    public string TotalSizeFormatted => TotalSizeBytes switch
-    {
-        < 1024 => $"{TotalSizeBytes} B",
-        < 1024 * 1024 => $"{TotalSizeBytes / 1024.0:F1} KB",
-        < 1024 * 1024 * 1024 => $"{TotalSizeBytes / (1024.0 * 1024):F1} MB",
-        _ => $"{TotalSizeBytes / (1024.0 * 1024 * 1024):F2} GB"
-    };
+    public string TotalSizeFormatted => IndexedFile.FormatSize(TotalSizeBytes);
 }
 
 public class ScanProgress
@@ -69,6 +87,7 @@ public class ScanProgress
     public int FilesScanned { get; set; }
     public int FilesTotal { get; set; }
     public int DirectoriesScanned { get; set; }
+    public int FilesRemoved { get; set; }
     public string CurrentDirectory { get; set; } = "";
     public bool IsRunning { get; set; }
     public bool IsComplete { get; set; }

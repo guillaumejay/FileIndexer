@@ -1,46 +1,15 @@
-using System.Diagnostics;
-
 namespace FileIndexer.Services;
 
 public class MacTrashService : ITrashService
 {
     public bool IsSupported => true;
 
-    public async Task<OperationResult> MoveToTrashAsync(string path)
+    public Task<OperationResult> MoveToTrashAsync(string path)
     {
-        try
-        {
-            // Use osascript to tell Finder to move file to trash
-            var escapedPath = path.Replace("\"", "\\\"");
-            var script = $"tell application \"Finder\" to delete POSIX file \"{escapedPath}\"";
-
-            var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = "osascript",
-                Arguments = $"-e '{script}'",
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            });
-
-            if (process == null)
-            {
-                return OperationResult.Failure("Impossible de lancer osascript");
-            }
-
-            var error = await process.StandardError.ReadToEndAsync();
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode != 0)
-            {
-                return OperationResult.Failure($"Erreur osascript : {error}");
-            }
-
-            return OperationResult.Success();
-        }
-        catch (Exception ex)
-        {
-            return OperationResult.Failure($"Erreur lors de la suppression : {ex.Message}");
-        }
+        // Ask Finder to move the item to the trash. Escape for an AppleScript string literal
+        // (backslashes first, then quotes); the whole script is passed as a single argument.
+        var escapedPath = path.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        var script = $"tell application \"Finder\" to delete POSIX file \"{escapedPath}\"";
+        return ProcessRunner.RunTrashToolAsync("osascript", "-e", script);
     }
 }

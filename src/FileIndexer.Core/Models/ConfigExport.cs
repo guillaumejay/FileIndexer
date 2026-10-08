@@ -19,6 +19,8 @@ public class ExportedCollection
 {
     public string Name { get; set; } = "";
     public string? Description { get; set; }
+    // Null in exports made before exclusions were exported: the default applies.
+    public string? ExcludedDirectories { get; set; }
     public List<string> Paths { get; set; } = new();
 }
 

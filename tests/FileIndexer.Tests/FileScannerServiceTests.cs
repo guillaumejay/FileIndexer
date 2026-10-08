@@ -128,6 +128,73 @@ public class FileScannerServiceTests : IDisposable
         Assert.Equal(1, await CountFiles("bravo"));
     }
 
+    [Fact]
+    public async Task IncrementalScan_UpdatesModifiedAndPurgesDeleted_WithoutDuplicates()
+    {
+        await InitCollection();
+        var alpha = Write("alpha.txt", "v1");
+        Write("bravo.txt");
+        Write(Path.Combine("nested", "charlie.txt"));
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root });
+        var before = (await _db.SearchAsync("")).TotalCount;
+
+        File.WriteAllText(alpha, "version 2");
+        File.SetLastWriteTimeUtc(alpha, DateTime.UtcNow.AddMinutes(1));
+        File.Delete(Path.Combine(_root, "bravo.txt"));
+
+        var progress = await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root }, incrementalScan: true);
+
+        // Folders and the edited file are refreshed in place, the deleted file is gone.
+        Assert.Equal(before - 1, (await _db.SearchAsync("")).TotalCount);
+        Assert.Equal(1, progress.FilesRemoved);
+        var alphaRow = Assert.Single((await _db.SearchAsync("alpha")).Files);
+        Assert.Equal("version 2".Length, alphaRow.SizeBytes);
+        Assert.Equal(0, await CountFiles("bravo"));
+    }
+
+    [Fact]
+    public async Task Scan_ExcludedDirectory_PrunesWholeSubtree()
+    {
+        await InitCollection();
+        Write(Path.Combine("__MACOSX", "sub", "deep.txt"));
+
+        await NewScanner().ScanCollectionAsync(
+            _collectionId, new[] { _root }, excludedDirectories: new[] { "__MACOSX" });
+
+        Assert.Equal(0, await CountFiles("deep"));
+        Assert.Empty((await _db.SearchAsync("sub")).Files);
+    }
+
+    [Fact]
+    public async Task Rescan_WithRootOffline_KeepsItsIndexedEntries()
+    {
+        await InitCollection();
+        var offline = Path.Combine(_root, "nas");
+        Directory.CreateDirectory(offline);
+        File.WriteAllText(Path.Combine(offline, "keepme.txt"), "x");
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { offline });
+
+        Directory.Move(offline, offline + "-unplugged");
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { offline });
+
+        Assert.Equal(1, await CountFiles("keepme"));
+    }
+
+    [Fact]
+    public async Task Scan_WhenIndexWriteFails_ThrowsInsteadOfHanging()
+    {
+        // No collection 999: every upsert violates the foreign key, so the writer fails while
+        // producers are still filling a tiny channel. Previously this deadlocked forever.
+        for (var i = 0; i < 50; i++) Write($"file{i}.txt");
+        var scanner = NewScanner();
+        scanner.BatchSize = 1;
+
+        var scan = scanner.ScanCollectionAsync(999, new[] { _root });
+
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() => scan.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.False(scanner.IsRunning);
+    }
+
     // --- Guards / edge cases -----------------------------------------------------------------
 
     [Fact]
