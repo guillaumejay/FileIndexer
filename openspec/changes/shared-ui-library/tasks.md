@@ -24,4 +24,5 @@
 
 - [x] 4.1 `dotnet build` (Web, MAUI Windows + Android) sans avertissement
 - [x] 4.2 Tests bUnit des composants partagés
-- [ ] 4.3 Vérification manuelle MAUI (Windows et Android)
+- [x] 4.3 Vérification manuelle MAUI Windows
+- [ ] 4.4 Vérification manuelle MAUI Android
