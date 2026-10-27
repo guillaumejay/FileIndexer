@@ -5,6 +5,10 @@ using FileIndexer.UI.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Machine-specific overrides (e.g. the real DatabasePath), git-ignored. Added last, so it wins
+// over every other source.
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: false);
+
 // Configuration
 var appSettings = builder.Configuration.GetSection("AppSettings").Get<AppSettings>() ?? new AppSettings();
 var databasePath = ResolveDatabasePath(appSettings.DatabasePath, builder.Environment.ContentRootPath);

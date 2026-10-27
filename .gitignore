@@ -49,3 +49,6 @@ appsettings.*.local.json
 
 # Publish profiles
 PublishProfiles/
+
+# Machine-specific settings (real database path)
+appsettings.Local.json
