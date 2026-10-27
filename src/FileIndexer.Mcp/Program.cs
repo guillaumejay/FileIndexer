@@ -28,6 +28,7 @@ builder.Services.AddSingleton(_ => new IndexDbContext(Path.GetFullPath(dbPath)))
 builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddSingleton<IndexPaths>();
 builder.Services.AddSingleton<ScanJobs>();
+builder.Services.AddSingleton<ConfigExportService>();
 builder.Services.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly();
 
 await builder.Build().RunAsync();

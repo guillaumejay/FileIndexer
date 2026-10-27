@@ -46,7 +46,31 @@ public class ConfigExportService
 
     public string Serialize(ConfigExport export)
     {
-        return JsonSerializer.Serialize(export, JsonOptions);
+        return JsonSerializer.Serialize(export, JsonOptions).ReplaceLineEndings("\n") + "\n";
+    }
+
+    // Writes the export to a file kept under version control. Rewrites it only when the
+    // collections changed, so re-exporting never produces a diff on the date alone.
+    // Returns false when the file was already up to date.
+    public async Task<bool> WriteExportAsync(string path)
+    {
+        var export = await BuildExportAsync();
+        if (File.Exists(path))
+        {
+            var existing = (await File.ReadAllTextAsync(path)).ReplaceLineEndings("\n");
+            ConfigExport? previous = null;
+            try { previous = Deserialize(existing); } catch (JsonException) { /* not an export: overwrite */ }
+            if (previous != null)
+            {
+                var exportedAt = export.ExportedAtUtc;
+                export.ExportedAtUtc = previous.ExportedAtUtc;
+                if (Serialize(export) == existing) return false;
+                export.ExportedAtUtc = exportedAt;
+            }
+        }
+
+        await File.WriteAllTextAsync(path, Serialize(export));
+        return true;
     }
 
     public ConfigExport? Deserialize(string json)
