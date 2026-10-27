@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FileIndexer.Data;
@@ -13,7 +14,10 @@ public class ConfigExportService
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // The file is read by people and diffed in git: keep accents as they are ("Déjà", not
+        // "Déjà"). Never embedded in HTML, so HTML-safe escaping buys nothing.
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
     public ConfigExportService(IndexDbContext db)
