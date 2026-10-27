@@ -172,6 +172,19 @@ public class FileScannerServiceTests : IDisposable
         Assert.Single((await _db.SearchAsync("")).Files, f => f.Path == Path.Combine(_root, "a"));
     }
 
+    [WindowsOnlyFact]
+    public async Task SubtreeScan_TypedInAnotherCase_DoesNotDuplicateRows()
+    {
+        await InitCollection();
+        Write(Path.Combine("Folder", "alpha.txt"));
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root });
+
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root }, incrementalScan: false,
+            subtree: Path.Combine(_root, "FOLDER"));
+
+        Assert.Single((await _db.SearchAsync("alpha")).Files);
+    }
+
     [Fact]
     public async Task SubtreeScan_OutsideTheRoots_Throws()
     {

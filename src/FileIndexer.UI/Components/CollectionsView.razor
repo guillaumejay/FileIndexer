@@ -280,8 +280,7 @@
         ScanProgress? result = null;
         var outcome = await Feedback.RunOperationAsync($"Indexing \"{collection.Name}\"", async _ =>
             {
-                result = await fs!.Scanner.ScanCollectionAsync(
-                    collection.Id, collection.Paths.Select(p => p.Path), excludedDirectories: collection.GetExcludedDirectoryList());
+                result = await fs!.Scanner.ScanCollectionAsync(collection);
                 return OperationResult.Success();
             },
             () => $"\"{collection.Name}\": {result!.FilesScanned:N0} entries, {result.FilesRemoved:N0} removed in {UiFormat.Duration(result.Elapsed)}");

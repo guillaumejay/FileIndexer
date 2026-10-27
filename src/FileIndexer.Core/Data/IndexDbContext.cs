@@ -297,8 +297,7 @@ public class IndexDbContext : IDisposable
 
             from = "files f INNER JOIN files_fts fts ON f.id = fts.rowid";
             where.Add("files_fts MATCH @Query");
-            // rank as bm25 with a hit in the name outweighing one in the folders above it.
-            // (bm25() itself cannot be called once results are grouped for dedup; rank can.)
+            // FTS5's way to weight rank by column: a hit in the name outweighs one in the folders.
             where.Add("fts.rank MATCH 'bm25(10.0, 2.0, 1.0)'");
             parameters.Add("Query", ftsQuery);
         }
@@ -376,9 +375,7 @@ public class IndexDbContext : IDisposable
         foreach (var term in query.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
             var alternatives = term.Split('|', StringSplitOptions.RemoveEmptyEntries)
-                .SelectMany(Spellings)
-                .Select(TermExpression)
-                .Where(e => e.Length > 0)
+                .SelectMany(TermExpressions)
                 .Distinct()
                 .ToList();
 
@@ -390,37 +387,31 @@ public class IndexDbContext : IDisposable
         return string.Join(" ", ftsTerms);
     }
 
-    // "x&y" <-> "xny" <-> "x and y" between single letters (D&D / DnD). Read back from "xnx" only
-    // when both letters match, so words like "and" or "ant" stay plain words.
-    private static readonly Regex Ampersand = new(@"^(\p{L})&(\p{L})$", RegexOptions.Compiled);
-    private static readonly Regex SpelledN = new(@"^(\p{L})n(\1)$",RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex NonWord = new(@"[^\p{L}\p{N}]+", RegexOptions.Compiled);
+    // Letter, "&" or "n", letter ("D&D", "DnD"). "n" counts only between two identical letters, so
+    // words like "and" or "ant" stay plain words.
+    private static readonly Regex AmpersandPair = new(@"^(\p{L})(&|n)(\p{L})$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    private static IEnumerable<string> Spellings(string term)
+    // The FTS expressions one alternative matches: itself, plus "x&y" = "xny" = "x and y".
+    private static IEnumerable<string> TermExpressions(string term)
     {
-        yield return term;
-        var m = Ampersand.Match(term);
-        if (!m.Success) m = SpelledN.Match(term);
+        var tokens = NonWord.Split(term).Where(t => t.Length > 0).ToArray();
+        if (tokens.Length > 0) yield return Expression(tokens);
+
+        var m = AmpersandPair.Match(term);
         if (!m.Success) yield break;
-        var (x, y) = (m.Groups[1].Value, m.Groups[2].Value);
-        yield return $"{x}&{y}";
-        yield return $"{x}n{y}";
-        yield return $"{x}_and_{y}";
+        var (x, separator, y) = (m.Groups[1].Value, m.Groups[2].Value, m.Groups[3].Value);
+        if (separator != "&" && !string.Equals(x, y, StringComparison.OrdinalIgnoreCase)) yield break;
+        yield return Expression([x, y]);
+        yield return Expression([x + "n" + y]);
+        yield return Expression([x, "and", y]);
     }
 
-    private static string TermExpression(string term)
-    {
-        var tokens = Regex.Split(term, @"[^\p{L}\p{N}]+").Where(t => t.Length > 0).ToList();
-        return tokens.Count switch
-        {
-            0 => "",
-            // Single token: prefix search to match partial words
-            // e.g. "anim" -> "anim"*  (matches "animist", "animation", etc.)
-            1 => $"\"{tokens[0]}\"*",
-            // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
-            // e.g. "d&d" -> NEAR("d" "d", 0)
-            _ => $"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)"
-        };
-    }
+    // One token: prefix search ("anim" -> "anim"*, matches "animist"). Several tokens (punctuation
+    // split the word): adjacent and in order ("d&d" -> NEAR("d" "d", 0)).
+    private static string Expression(string[] tokens) => tokens.Length == 1
+        ? $"\"{tokens[0]}\"*"
+        : $"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)";
 
     public Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null) =>
         SearchWithSortAsync(query, SortColumn.ModifiedAt, SortDirection.Desc, limit, offset, collectionIds);
@@ -576,6 +567,18 @@ public class IndexDbContext : IDisposable
         return counts;
     }
 
+    // Entries directly inside a folder, folders first then by name, across collections.
+    // directories: true for folders only, false for files only, null for both.
+    public async Task<List<IndexedFile>> GetChildrenAsync(string directory, bool? directories = null, int limit = int.MaxValue)
+    {
+        using var connection = CreateConnection();
+        var rows = await connection.QueryAsync<IndexedFileDto>($"""
+            SELECT * FROM files WHERE directory = @Directory {(directories is { } d ? $"AND is_directory = {(d ? 1 : 0)}" : "")}
+            GROUP BY path ORDER BY is_directory DESC, name LIMIT @Limit
+            """, new { Directory = directory, Limit = limit });
+        return rows.Select(MapToIndexedFile).ToList();
+    }
+
     // Removes every row (in all collections) for the given paths and anything below them.
     public async Task DeletePathsAsync(IEnumerable<string> paths)
     {
@@ -597,8 +600,12 @@ public class IndexDbContext : IDisposable
         FROM collections c
         """;
 
-    public Task<List<Collection>> GetCollectionsAsync() =>
-        QueryCollectionsAsync($"{CollectionSelect} ORDER BY c.name", null);
+    // The stats cost a pass over every row of the collection: skip them when only names and
+    // paths are needed.
+    public Task<List<Collection>> GetCollectionsAsync(bool withStats = true) =>
+        QueryCollectionsAsync(
+            $"{(withStats ? CollectionSelect : "SELECT c.*, 0 AS File_Count, NULL AS Last_Indexed_At_Utc FROM collections c")} ORDER BY c.name",
+            null);
 
     public async Task<Collection?> GetCollectionByIdAsync(int id) =>
         (await QueryCollectionsAsync($"{CollectionSelect} WHERE c.id = @Id", id)).SingleOrDefault();

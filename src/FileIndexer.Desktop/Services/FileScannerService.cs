@@ -39,6 +39,10 @@ public class FileScannerService
     // cancelled or failed scan leaves the previous index intact.
     // incrementalScan only skips rewriting entries whose modification date is unchanged.
     // subtree, a folder inside one of the roots, limits the scan (and the purge) to that folder.
+    public Task<ScanProgress> ScanCollectionAsync(Collection collection, bool incrementalScan = false, string? subtree = null) =>
+        ScanCollectionAsync(collection.Id, collection.Paths.Select(p => p.Path), incrementalScan,
+            collection.GetExcludedDirectoryList(), subtree);
+
     public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false, IEnumerable<string>? excludedDirectories = null, string? subtree = null)
     {
         var pathList = rootPaths.ToList();
@@ -48,8 +52,9 @@ public class FileScannerService
         }
         if (subtree != null)
         {
-            if (!pathList.Any(root => PathHelper.IsSameOrUnder(subtree, root)))
-                throw new ArgumentException($"{subtree} is not inside the collection's folders", nameof(subtree));
+            var root = pathList.FirstOrDefault(r => PathHelper.IsSameOrUnder(subtree, r))
+                ?? throw new ArgumentException($"{subtree} is not inside the collection's folders", nameof(subtree));
+            subtree = PathHelper.WithDiskCase(Path.GetFullPath(subtree), root);
             pathList = [subtree];
         }
 

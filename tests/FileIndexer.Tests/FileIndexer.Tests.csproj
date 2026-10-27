@@ -25,7 +25,6 @@
     <ProjectReference Include="..\..\src\FileIndexer.Core\FileIndexer.Core.csproj" />
     <ProjectReference Include="..\..\src\FileIndexer.Desktop\FileIndexer.Desktop.csproj" />
     <ProjectReference Include="..\..\src\FileIndexer.UI\FileIndexer.UI.csproj" />
-    <ProjectReference Include="..\..\src\FileIndexer.Mcp\FileIndexer.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

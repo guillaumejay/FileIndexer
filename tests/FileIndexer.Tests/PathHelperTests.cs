@@ -1,12 +1,10 @@
-using FileIndexer.Mcp;
-
 namespace FileIndexer.Tests;
 
-public class IndexPathsTests : IDisposable
+public class PathHelperTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "fi-paths-tests", Guid.NewGuid().ToString("N"));
 
-    public IndexPathsTests() => Directory.CreateDirectory(Path.Combine(_root, "D&D and Clones", "OSR"));
+    public PathHelperTests() => Directory.CreateDirectory(Path.Combine(_root, "D&D and Clones", "OSR"));
 
     public void Dispose()
     {
@@ -14,18 +12,18 @@ public class IndexPathsTests : IDisposable
     }
 
     [WindowsOnlyFact]
-    public void Canonical_UsesTheCaseOnDisk()
+    public void WithDiskCase_UsesTheCaseOnDisk()
     {
         var typed = Path.Combine(_root, "d&d AND clones", "osr");
 
-        Assert.Equal(Path.Combine(_root, "D&D and Clones", "OSR"), IndexPaths.Canonical(typed, _root));
+        Assert.Equal(Path.Combine(_root, "D&D and Clones", "OSR"), PathHelper.WithDiskCase(typed, _root));
     }
 
     [Fact]
-    public void Canonical_KeepsMissingSegmentsAsTyped()
+    public void WithDiskCase_KeepsMissingSegmentsAsTyped()
     {
         var typed = Path.Combine(_root, "D&D and Clones", "not-yet");
 
-        Assert.Equal(typed, IndexPaths.Canonical(typed, _root));
+        Assert.Equal(typed, PathHelper.WithDiskCase(typed, _root));
     }
 }

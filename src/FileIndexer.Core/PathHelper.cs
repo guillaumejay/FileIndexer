@@ -38,6 +38,28 @@ public static class PathHelper
         }
     }
 
+    // path (inside root) spelled as the scanner records it: root as given, then each segment
+    // with its on-disk case. The index compares paths byte for byte, so "r:\jdr\x" would match
+    // nothing and a rescan of it would duplicate every row. Unreadable segments stay as given.
+    public static string WithDiskCase(string path, string root)
+    {
+        var current = Path.TrimEndingDirectorySeparator(root);
+        foreach (var segment in Path.GetRelativePath(root, path).Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (segment == ".") continue;
+            string? onDisk = null;
+            try
+            {
+                onDisk = new DirectoryInfo(current).EnumerateFileSystemInfos(segment).FirstOrDefault()?.Name;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+            current = Path.Combine(current, onDisk ?? segment);
+        }
+        return current;
+    }
+
     private static string TrimEnd(string path) =>
         path.Length > 1 ? path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : path;
 }
