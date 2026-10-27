@@ -38,12 +38,19 @@ public class FileScannerService
     // The collection is never wiped up front, so search keeps working during a rescan and a
     // cancelled or failed scan leaves the previous index intact.
     // incrementalScan only skips rewriting entries whose modification date is unchanged.
-    public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false, IEnumerable<string>? excludedDirectories = null)
+    // subtree, a folder inside one of the roots, limits the scan (and the purge) to that folder.
+    public async Task<ScanProgress> ScanCollectionAsync(int collectionId, IEnumerable<string> rootPaths, bool incrementalScan = false, IEnumerable<string>? excludedDirectories = null, string? subtree = null)
     {
         var pathList = rootPaths.ToList();
         if (pathList.Count == 0)
         {
             throw new InvalidOperationException("No paths configured for this collection");
+        }
+        if (subtree != null)
+        {
+            if (!pathList.Any(root => PathHelper.IsSameOrUnder(subtree, root)))
+                throw new ArgumentException($"{subtree} is not inside the collection's folders", nameof(subtree));
+            pathList = [subtree];
         }
 
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
@@ -70,7 +77,7 @@ public class FileScannerService
             // Path -> modified ticks of what the index holds. Entries are removed as they are found
             // on disk, so whatever is left at the end is no longer there.
             var notSeenYet = new ConcurrentDictionary<string, long>(
-                await _db.GetCollectionFileStampsAsync(collectionId), StringComparer.Ordinal);
+                await _db.GetCollectionFileStampsAsync(collectionId, subtree), StringComparer.Ordinal);
             // Roots that are offline and folders that could not be listed: what the index holds
             // below them is kept rather than purged, since we could not check it.
             var unverified = new ConcurrentBag<string>();

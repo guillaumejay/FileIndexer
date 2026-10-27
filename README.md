@@ -56,6 +56,21 @@ dotnet build -t:Run -f net10.0-maccatalyst src/FileIndexer.Maui
 dotnet build -t:Run -f net10.0-android src/FileIndexer.Maui
 ```
 
+### 🤖 MCP server (for AI agents)
+
+`FileIndexer.Mcp` exposes an existing index to MCP clients over stdio: `search_files`,
+`search_dirs`, `list_dir` (with file counts per folder), `rescan` (incremental, limited to a
+folder) and `index_status`. Publish it outside the repo so rebuilding does not lock the running
+copy, then register it with the database to serve:
+
+```powershell
+dotnet publish src/FileIndexer.Mcp -c Release -o $env:LOCALAPPDATA\Programs\FileIndexer.Mcp
+claude mcp add fileindexer -s user -- "$env:LOCALAPPDATA\Programs\FileIndexer.Mcp\FileIndexer.Mcp.exe" --db D:\path\to\fileindex.db
+```
+
+Searches ignore case, accents and punctuation, treat `D&D`, `DnD` and `D and D` alike, and take
+`a|b` for alternatives. `rescan` writes to the database; the other tools only read it.
+
 ## Configuration
 
 Edit `appsettings.json` (Web) or use the in-app settings (MAUI):
@@ -95,6 +110,7 @@ The project is divided into several layers to maximize code reuse:
 - **src/FileIndexer.Web**: Blazor Server host (configuration, `Program.cs`, one page).
 - **src/FileIndexer.Maui**: .NET MAUI Hybrid host (database selection, native dialogs). On
   Android/iOS it is a read-only browser of a synced index: the database is copied into app storage.
+- **src/FileIndexer.Mcp**: MCP server (stdio) over an index, for AI agents.
 
 ```
 FileIndexer/
@@ -103,7 +119,8 @@ FileIndexer/
 │   ├── FileIndexer.Desktop/   # File system services
 │   ├── FileIndexer.UI/        # Shared Blazor components, CSS, JS
 │   ├── FileIndexer.Web/       # Web Host
-│   └── FileIndexer.Maui/      # Native Host (Hybrid)
+│   ├── FileIndexer.Maui/      # Native Host (Hybrid)
+│   └── FileIndexer.Mcp/       # MCP server for AI agents
 ├── tests/                     # xunit v3 + bUnit (`dotnet test`)
 ├── openspec/                  # Specification-driven development artifacts
 └── agents.md                  # Specialized AI Agent roles

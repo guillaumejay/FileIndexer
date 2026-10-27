@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Dapper;
 using FileIndexer.Models;
@@ -270,7 +271,8 @@ public class IndexDbContext : IDisposable
         IEnumerable<string>? extensionFilter = null,
         string? directoryFilter = null,
         bool? showDirectories = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? underPath = null)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var isSearch = !string.IsNullOrWhiteSpace(query);
@@ -295,6 +297,9 @@ public class IndexDbContext : IDisposable
 
             from = "files f INNER JOIN files_fts fts ON f.id = fts.rowid";
             where.Add("files_fts MATCH @Query");
+            // rank as bm25 with a hit in the name outweighing one in the folders above it.
+            // (bm25() itself cannot be called once results are grouped for dedup; rank can.)
+            where.Add("fts.rank MATCH 'bm25(10.0, 2.0, 1.0)'");
             parameters.Add("Query", ftsQuery);
         }
 
@@ -315,6 +320,11 @@ public class IndexDbContext : IDisposable
         if (showDirectories.HasValue)
         {
             where.Add(showDirectories.Value ? "f.is_directory = 1" : "f.is_directory = 0");
+        }
+
+        if (underPath != null)
+        {
+            where.Add(SubtreeCondition(parameters, "Under", underPath, "f.path"));
         }
 
         var orderByColumn = sortColumn switch
@@ -355,33 +365,61 @@ public class IndexDbContext : IDisposable
     //   (quoting stops FTS5 from reading AND/OR/NOT/NEAR as operators)
     // - Words with punctuation like "d&d" are split into sub-tokens ("d","d")
     //   and combined with NEAR(..., 0) to require them adjacent, matching the original text.
+    // - "a|b" matches either alternative.
+    // - "&" also matches its spelled-out forms, both ways: "d&d" = "dnd" = "d and d".
     // Tokens are letters/digits only, so they never contain a double quote to escape.
     // Returns an empty string when the input yields no usable tokens (e.g. only punctuation),
     // so callers can avoid issuing an invalid empty MATCH.
     internal static string BuildFtsQuery(string query)
     {
-        var terms = query.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var ftsTerms = new List<string>();
-        foreach (var term in terms)
+        foreach (var term in query.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
-            var tokens = System.Text.RegularExpressions.Regex.Split(term, @"[^\p{L}\p{N}]+")
-                .Where(t => t.Length > 0)
+            var alternatives = term.Split('|', StringSplitOptions.RemoveEmptyEntries)
+                .SelectMany(Spellings)
+                .Select(TermExpression)
+                .Where(e => e.Length > 0)
+                .Distinct()
                 .ToList();
 
-            if (tokens.Count > 1)
-            {
-                // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
-                // e.g. "d&d" -> NEAR("d" "d", 0)
-                ftsTerms.Add($"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)");
-            }
-            else if (tokens.Count == 1)
-            {
-                // Single token: prefix search to match partial words
-                // e.g. "anim" -> "anim"*  (matches "animist", "animation", etc.)
-                ftsTerms.Add($"\"{tokens[0]}\"*");
-            }
+            if (alternatives.Count == 1)
+                ftsTerms.Add(alternatives[0]);
+            else if (alternatives.Count > 1)
+                ftsTerms.Add($"({string.Join(" OR ", alternatives)})");
         }
         return string.Join(" ", ftsTerms);
+    }
+
+    // "x&y" <-> "xny" <-> "x and y" between single letters (D&D / DnD). Read back from "xnx" only
+    // when both letters match, so words like "and" or "ant" stay plain words.
+    private static readonly Regex Ampersand = new(@"^(\p{L})&(\p{L})$", RegexOptions.Compiled);
+    private static readonly Regex SpelledN = new(@"^(\p{L})n(\1)$",RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static IEnumerable<string> Spellings(string term)
+    {
+        yield return term;
+        var m = Ampersand.Match(term);
+        if (!m.Success) m = SpelledN.Match(term);
+        if (!m.Success) yield break;
+        var (x, y) = (m.Groups[1].Value, m.Groups[2].Value);
+        yield return $"{x}&{y}";
+        yield return $"{x}n{y}";
+        yield return $"{x}_and_{y}";
+    }
+
+    private static string TermExpression(string term)
+    {
+        var tokens = Regex.Split(term, @"[^\p{L}\p{N}]+").Where(t => t.Length > 0).ToList();
+        return tokens.Count switch
+        {
+            0 => "",
+            // Single token: prefix search to match partial words
+            // e.g. "anim" -> "anim"*  (matches "animist", "animation", etc.)
+            1 => $"\"{tokens[0]}\"*",
+            // Punctuation produced multiple sub-tokens: use NEAR to require adjacency
+            // e.g. "d&d" -> NEAR("d" "d", 0)
+            _ => $"NEAR({string.Join(" ", tokens.Select(t => $"\"{t}\""))}, 0)"
+        };
     }
 
     public Task<SearchResult> SearchAsync(string query, int limit = 100, int offset = 0, IEnumerable<int>? collectionIds = null) =>
@@ -420,12 +458,15 @@ public class IndexDbContext : IDisposable
 
     // Path -> modified time (UTC ticks) of every row of a collection. Loaded once per scan so
     // incremental scans compare in memory instead of issuing one query per file.
-    public async Task<Dictionary<string, long>> GetCollectionFileStampsAsync(int collectionId)
+    // underPath limits it to that folder and what lies below it.
+    public async Task<Dictionary<string, long>> GetCollectionFileStampsAsync(int collectionId, string? underPath = null)
     {
+        var p = new DynamicParameters();
+        p.Add("CollectionId", collectionId);
+        var scope = underPath == null ? "" : " AND " + SubtreeCondition(p, "Under", underPath);
         using var connection = CreateConnection();
         var rows = await connection.QueryAsync<(string Path, string Modified)>(
-            "SELECT path, modified_at_utc FROM files WHERE collection_id = @CollectionId",
-            new { CollectionId = collectionId });
+            $"SELECT path, modified_at_utc FROM files WHERE collection_id = @CollectionId{scope}", p);
         return rows.ToDictionary(r => r.Path, r => ParseUtc(r.Modified).Ticks, StringComparer.Ordinal);
     }
 
@@ -480,13 +521,13 @@ public class IndexDbContext : IDisposable
     // SQL condition matching `path` itself and everything below it, written as a range so the
     // path index serves it: descendants all start with "path + separator", and sort before the
     // same prefix with its (ASCII) separator incremented. Adds @{name}, @{name}Prefix, @{name}End.
-    private static string SubtreeCondition(DynamicParameters parameters, string name, string path)
+    private static string SubtreeCondition(DynamicParameters parameters, string name, string path, string column = "path")
     {
         var prefix = PathHelper.WithTrailingSeparator(path);
         parameters.Add(name, path);
         parameters.Add($"{name}Prefix", prefix);
         parameters.Add($"{name}End", prefix[..^1] + (char)(prefix[^1] + 1));
-        return $"(path = @{name} OR (path >= @{name}Prefix AND path < @{name}End))";
+        return $"({column} = @{name} OR ({column} >= @{name}Prefix AND {column} < @{name}End))";
     }
 
     // Rewrites every row (in all collections) for a file or folder that moved on disk from
@@ -519,6 +560,20 @@ public class IndexDbContext : IDisposable
             WHERE {source}
             """, p, tx);
         tx.Commit();
+    }
+
+    // Number of files (folders not counted) below each folder, across collections.
+    public async Task<Dictionary<string, int>> CountFilesUnderAsync(IEnumerable<string> directories)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        using var connection = CreateConnection();
+        foreach (var directory in directories.Distinct(StringComparer.Ordinal))
+        {
+            var p = new DynamicParameters();
+            counts[directory] = await connection.ExecuteScalarAsync<int>(
+                $"SELECT COUNT(DISTINCT path) FROM files WHERE is_directory = 0 AND {SubtreeCondition(p, "Dir", directory)}", p);
+        }
+        return counts;
     }
 
     // Removes every row (in all collections) for the given paths and anything below them.

@@ -110,6 +110,69 @@ public class IndexDbContextTests
         Assert.Equal(1, result.TotalCount);
     }
 
+    [Theory]
+    [InlineData("dnd")]
+    [InlineData("D&D")]
+    [InlineData("d and d")]
+    public async Task Search_AmpersandSpellings_FindEachOther(string query)
+    {
+        using var db = new IndexDbContext(":memory:");
+        var col = await db.CreateCollectionAsync("test", null);
+        await db.UpsertFilesAsync([
+            MakeFile(col.Id, "D&D Basic.pdf"),
+            MakeFile(col.Id, "DnD_5e_123456.pdf"),
+            MakeFile(col.Id, "D and D Expert.pdf"),
+            MakeFile(col.Id, "Dune.pdf")
+        ]);
+
+        // "d and d" is three words, so it only finds the file that spells it out.
+        var expected = query == "d and d" ? 1 : 3;
+        Assert.Equal(expected, (await db.SearchAsync(query)).TotalCount);
+    }
+
+    [Fact]
+    public async Task Search_IgnoresCaseAccentsAndUnderscores()
+    {
+        using var db = new IndexDbContext(":memory:");
+        var col = await db.CreateCollectionAsync("test", null);
+        await db.UpsertFilesAsync([MakeFile(col.Id, "Les_Héros_Oubliés.pdf")]);
+
+        Assert.Equal(1, (await db.SearchAsync("heros OUBLIES")).TotalCount);
+    }
+
+    [Fact]
+    public async Task Search_UnderPath_KeepsOnlyThatFolder()
+    {
+        using var db = new IndexDbContext(":memory:");
+        var col = await db.CreateCollectionAsync("test", null);
+        await db.UpsertFilesAsync([
+            MakeFile(col.Id, "white box.pdf", @"C:\jdr\OSR"),
+            MakeFile(col.Id, "white box.pdf", @"C:\jdr\OSR2"),
+            MakeFile(col.Id, "white box.pdf", @"C:\jdr")
+        ]);
+
+        var result = await db.SearchWithSortAsync("white", SortColumn.Rank, SortDirection.Asc, underPath: @"C:\jdr\OSR");
+
+        Assert.Equal(@"C:\jdr\OSR\white box.pdf", Assert.Single(result.Files).Path);
+    }
+
+    [Fact]
+    public async Task CountFilesUnder_CountsFilesInSubtreeOnly()
+    {
+        using var db = new IndexDbContext(":memory:");
+        var col = await db.CreateCollectionAsync("test", null);
+        var folder = MakeFile(col.Id, "OSR", @"C:\jdr");
+        folder.IsDirectory = true;
+        await db.UpsertFilesAsync([
+            folder,
+            MakeFile(col.Id, "a.pdf", @"C:\jdr\OSR"),
+            MakeFile(col.Id, "b.pdf", @"C:\jdr\OSR\deep"),
+            MakeFile(col.Id, "c.pdf", @"C:\jdr\OSR2")
+        ]);
+
+        Assert.Equal(2, (await db.CountFilesUnderAsync([@"C:\jdr\OSR"]))[@"C:\jdr\OSR"]);
+    }
+
     [Fact]
     public async Task DeleteCollection_CascadesToFilesAndPaths()
     {

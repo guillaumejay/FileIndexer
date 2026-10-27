@@ -153,6 +153,34 @@ public class FileScannerServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SubtreeScan_UpdatesThatFolderAndLeavesTheRestAlone()
+    {
+        await InitCollection();
+        Write(Path.Combine("a", "alpha.txt"));
+        Write(Path.Combine("b", "bravo.txt"));
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root });
+
+        Write(Path.Combine("a", "charlie.txt"));
+        File.Delete(Path.Combine(_root, "a", "alpha.txt"));
+        File.Delete(Path.Combine(_root, "b", "bravo.txt"));
+        await NewScanner().ScanCollectionAsync(_collectionId, new[] { _root }, incrementalScan: true,
+            subtree: Path.Combine(_root, "a"));
+
+        Assert.Equal(1, await CountFiles("charlie"));
+        Assert.Equal(0, await CountFiles("alpha"));
+        Assert.Equal(1, await CountFiles("bravo")); // outside the subtree: not checked, not purged
+        Assert.Single((await _db.SearchAsync("")).Files, f => f.Path == Path.Combine(_root, "a"));
+    }
+
+    [Fact]
+    public async Task SubtreeScan_OutsideTheRoots_Throws()
+    {
+        await InitCollection();
+        await Assert.ThrowsAsync<ArgumentException>(() => NewScanner().ScanCollectionAsync(
+            _collectionId, new[] { Path.Combine(_root, "a") }, subtree: Path.Combine(_root, "b")));
+    }
+
+    [Fact]
     public async Task Scan_ExcludedDirectory_PrunesWholeSubtree()
     {
         await InitCollection();

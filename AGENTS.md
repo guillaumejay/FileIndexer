@@ -10,6 +10,7 @@ This file defines the specialized AI agent roles and responsibilities for the Fi
   - Enhance `FileScannerService.cs` (parallelism, channels, producer-consumer).
   - Manage data models in `Models/`.
   - Ensure high-performance search in `SearchService.cs`.
+  - Maintain the MCP server in `FileIndexer.Mcp` (agent-facing search, browse and rescan tools).
 
 ## 🌐 Web/Frontend Specialist
 **Focus:** `FileIndexer.UI` (shared components) & `FileIndexer.Web`
