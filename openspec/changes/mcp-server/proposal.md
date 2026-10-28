@@ -13,4 +13,4 @@ Un agent IA qui range des fichiers (~470 PDF de JdR vers `R:\JDR`, ~149 000 fich
 
 - Recherche dans le texte des PDF (rien n'est extrait aujourd'hui ; projet à part entière).
 - Recherche floue (« Shadow Dark » ne trouve pas « Shadowdark » ; les préfixes, oui).
-- Création ou modification de collections via MCP.
+- Création ou modification de collections via MCP, export de la configuration (rare : il se fait depuis l'app ; un outil de plus coûterait du contexte à chaque session).

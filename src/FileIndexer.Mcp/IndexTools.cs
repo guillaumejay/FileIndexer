@@ -2,13 +2,12 @@ using System.ComponentModel;
 using System.Text;
 using FileIndexer.Data;
 using FileIndexer.Models;
-using FileIndexer.Services;
 using ModelContextProtocol.Server;
 
 namespace FileIndexer.Mcp;
 
 [McpServerToolType]
-public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs scans, ConfigExportService exports)
+public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs scans)
 {
     private const int MaxResults = 500;
     private const string QueryHelp =
@@ -78,16 +77,6 @@ public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs sca
                  "Incremental: only changed entries are rewritten. Waits up to 30 s, then keeps running in the background (see index_status).")]
     public Task<string> Rescan([Description("Folder to rescan, e.g. R:\\JDR or R:\\JDR\\OSR.")] string path) =>
         scans.StartAsync(path, TimeSpan.FromSeconds(30));
-
-    [McpServerTool(Name = "export_collections", Destructive = false, Idempotent = true)]
-    [Description("Writes the collections (names, folders, exclusions) as a FileIndexer config export, the file the app imports. " +
-                 "Leaves the file untouched when nothing changed, so it can live under version control.")]
-    public async Task<string> ExportCollections(
-        [Description("JSON file to write, e.g. D:\\utils\\vie-courante\\loisirs\\fileindexer-collections.json.")] string path)
-    {
-        var full = Path.GetFullPath(path.Trim().Trim('"'));
-        return await exports.WriteExportAsync(full) ? $"{full} written." : $"{full} already up to date.";
-    }
 
     [McpServerTool(Name = "index_status", ReadOnly = true)]
     [Description("Indexed collections and folders, their entry counts and last change, and the state of the last rescan.")]

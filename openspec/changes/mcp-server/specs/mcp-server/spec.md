@@ -25,13 +25,6 @@ The server SHALL expose `list_dir`, listing sub-folders (with file counts) then 
 - **WHEN** the path is not inside an indexed collection
 - **THEN** the tool answers with the list of indexed folders instead of failing
 
-### Requirement: Export collections for version control
-The server SHALL expose `export_collections(path)`, writing the config export the app imports, and SHALL leave the file unchanged when the collections are the same as in it.
-
-#### Scenario: Nothing changed
-- **WHEN** the collections match the existing export file
-- **THEN** the file is not rewritten (its export date does not change) and the tool says it is up to date
-
 ### Requirement: Rescan a folder
 The server SHALL expose `rescan(path)`, an incremental scan of that folder only, running one at a time in the background, and `index_status` to follow it.
 

@@ -11,7 +11,6 @@
 - [x] 2.2 `IndexPaths` : rattachement à la collection et casse du disque
 - [x] 2.3 Outils `search_files`, `search_dirs`, `list_dir`, `rescan`, `index_status`
 - [x] 2.4 `ScanJobs` : un scan à la fois, en arrière-plan
-- [x] 2.5 `export_collections` : export versionnable (`ConfigExportService.WriteExportAsync`, réécrit seulement si les collections changent)
 
 ## 3. Vérification et docs
 

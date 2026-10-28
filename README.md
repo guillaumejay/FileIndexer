@@ -60,8 +60,7 @@ dotnet build -t:Run -f net10.0-android src/FileIndexer.Maui
 
 `FileIndexer.Mcp` exposes an existing index to MCP clients over stdio: `search_files`,
 `search_dirs`, `list_dir` (with file counts per folder), `rescan` (incremental, limited to a
-folder), `export_collections` (writes the collections file the app imports, untouched when
-nothing changed, so it can be versioned) and `index_status`. Publish it outside the repo so rebuilding does not lock the running
+folder) and `index_status`. Publish it outside the repo so rebuilding does not lock the running
 copy, then register it with the database to serve:
 
 ```powershell
@@ -70,8 +69,7 @@ claude mcp add fileindexer -s user -- "$env:LOCALAPPDATA\Programs\FileIndexer.Mc
 ```
 
 Searches ignore case, accents and punctuation, treat `D&D`, `DnD` and `D and D` alike, and take
-`a|b` for alternatives. `rescan` writes to the database and `export_collections` to the file it is given; the other tools
-only read.
+`a|b` for alternatives. `rescan` writes to the database; the other tools only read it.
 
 ## Configuration
 
