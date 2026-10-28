@@ -12,13 +12,19 @@ public class FileOperationsService
     private readonly IndexDbContext _db;
     private readonly ITrashService _trashService;
     private readonly ILogger<FileOperationsService> _logger;
+    private readonly IFileOperationJournal? _journal;
 
-    public FileOperationsService(IndexDbContext db, ITrashService trashService, ILogger<FileOperationsService> logger)
+    // journal is optional: hosts that register one get every move, rename, copy and delete traced.
+    public FileOperationsService(IndexDbContext db, ITrashService trashService, ILogger<FileOperationsService> logger, IFileOperationJournal? journal = null)
     {
         _db = db;
         _trashService = trashService;
         _logger = logger;
+        _journal = journal;
     }
+
+    private Task Journal(string operation, string path, string? destination, string? error = null) =>
+        _journal?.RecordAsync(operation, path, destination, error) ?? Task.CompletedTask;
 
     public Task<OperationResult> OpenFileAsync(string path)
     {
@@ -120,10 +126,12 @@ public class FileOperationsService
         {
             await MoveOnDiskAsync(file, newPath, overwrite);
             await _db.MovePathAsync(file.Path, newPath);
+            await Journal("rename", file.Path, newPath);
             return OperationResult.Success();
         }
         catch (Exception ex)
         {
+            await Journal("rename", file.Path, newPath, ex.Message);
             _logger.LogError(ex, "Failed to rename {Path} to {NewPath}", file.Path, newPath);
             return OperationResult.Failure($"Impossible de renommer : {ex.Message}");
         }
@@ -208,10 +216,12 @@ public class FileOperationsService
                     await CopyOnDiskAsync(file, destPath, overwrite);
                     await IndexCopyAsync(file, destPath, overwrite);
                 }
+                await Journal(move ? "move" : "copy", file.Path, destPath);
                 succeeded++;
             }
             catch (Exception ex)
             {
+                await Journal(move ? "move" : "copy", file.Path, destPath, ex.Message);
                 errors.Add(new FileOperationError(file.Path, ex.Message));
                 _logger.LogError(ex, "Failed {Operation} of {Path} to {Destination}", label, file.Path, destPath);
             }
@@ -346,6 +356,7 @@ public class FileOperationsService
             }
 
             var result = await _trashService.MoveToTrashAsync(file.Path);
+            await Journal("delete", file.Path, null, result.IsSuccess ? null : result.ErrorMessage ?? "trash failed");
             if (!result.IsSuccess)
             {
                 // Keep going so one failure does not abort the whole batch.

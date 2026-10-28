@@ -60,8 +60,11 @@ dotnet build -t:Run -f net10.0-android src/FileIndexer.Maui
 
 `FileIndexer.Mcp` exposes an existing index to MCP clients over stdio: `search_files`,
 `search_dirs`, `list_dir` (with file counts per folder), `rescan` (incremental, limited to a
-folder) and `index_status`. Publish it outside the repo so rebuilding does not lock the running
-copy, then register it with the database to serve:
+folder), `move`, `rename`, `delete` (recycle bin) and `index_status`. File operations keep the
+index in step, including moves from one collection to another. Every move, rename, copy and
+delete (from the MCP server, Web or MAUI) is journaled in the `operations` table of the database;
+`index_status` reports the counts. Publish it outside the repo so rebuilding does not lock the
+running copy, then register it with the database to serve:
 
 ```powershell
 dotnet publish src/FileIndexer.Mcp -c Release -o $env:LOCALAPPDATA\Programs\FileIndexer.Mcp
@@ -69,7 +72,7 @@ claude mcp add fileindexer -s user -- "$env:LOCALAPPDATA\Programs\FileIndexer.Mc
 ```
 
 Searches ignore case, accents and punctuation, treat `D&D`, `DnD` and `D and D` alike, and take
-`a|b` for alternatives. `rescan` writes to the database; the other tools only read it.
+`a|b` for alternatives. `rescan` and the file operations write to the database; the search and listing tools only read it.
 
 ## Configuration
 

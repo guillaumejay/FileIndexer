@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Text;
 using FileIndexer.Data;
 using FileIndexer.Models;
+using FileIndexer.Services;
 using ModelContextProtocol.Server;
 
 namespace FileIndexer.Mcp;
@@ -79,7 +80,7 @@ public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs sca
         scans.StartAsync(path, TimeSpan.FromSeconds(30));
 
     [McpServerTool(Name = "index_status", ReadOnly = true)]
-    [Description("Indexed collections and folders, their entry counts and last change, and the state of the last rescan.")]
+    [Description("Indexed collections and folders, their entry counts and last change, the state of the last rescan, and how many moves, renames and deletes were made (7 days and all time).")]
     public async Task<string> IndexStatus()
     {
         var output = new StringBuilder();
@@ -89,6 +90,8 @@ public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs sca
             output.Append($"{c.Name}: {c.FileCount} entries, last change {last} — {string.Join(", ", c.Paths.Select(p => p.Path))}\n");
         }
         output.Append(scans.Describe()).Append('\n');
+        output.Append($"Operations, last 7 days: {Counts(await db.GetOperationCountsAsync(DateTime.UtcNow.AddDays(-7)))}\n");
+        output.Append($"Operations, all time: {Counts(await db.GetOperationCountsAsync())}\n");
         return output.ToString();
     }
 
@@ -103,6 +106,10 @@ public sealed class IndexTools(IndexDbContext db, IndexPaths paths, ScanJobs sca
         var lines = result.Files.Select(f => counts != null ? $"{f.Path} | {counts[f.Path]} files" : FileLine(f, f.Path));
         return $"{result.Files.Count} of {result.TotalCount} matches:\n{string.Join('\n', lines)}\n";
     }
+
+    private static string Counts(List<OperationCount> counts) => counts.Count == 0
+        ? "none"
+        : string.Join(", ", counts.Select(c => $"{c.Operation} {c.Succeeded}{(c.Failed > 0 ? $" ({c.Failed} failed)" : "")}"));
 
     private static string FileLine(IndexedFile file, string label) =>
         $"{label} | {file.SizeFormatted} | {file.ModifiedAtUtc.ToLocalTime():yyyy-MM-dd}";

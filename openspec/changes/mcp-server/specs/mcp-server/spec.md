@@ -31,3 +31,25 @@ The server SHALL expose `rescan(path)`, an incremental scan of that folder only,
 #### Scenario: Files added in one folder
 - **WHEN** files are added under `R:\JDR\OSR` and `rescan` is called on that folder
 - **THEN** they become searchable, and entries outside `R:\JDR\OSR` are neither checked nor removed
+
+### Requirement: Move, rename and delete through the index
+The server SHALL expose `move(paths, destinationFolder, ifExists)`, `rename(path, newName, ifExists)` and `delete(paths)`, applying the change on disk and in the index, reporting one result per item, and sending deleted items to the recycle bin.
+
+#### Scenario: Moving into another collection
+- **WHEN** a file of collection "Non trié" is moved into a folder of collection "JDR"
+- **THEN** its index row belongs to "JDR" and no rescan is needed to find it there
+
+#### Scenario: One item fails
+- **WHEN** one of the paths to move does not exist
+- **THEN** that item reports an error and the other items are still moved
+
+### Requirement: Operations journal
+Every move, rename, copy and delete made through `FileOperationsService` (MCP server, Web, MAUI) SHALL be stored in the index database (`operations` table), one row per item with date, operation, outcome, path, destination and the program that did it, so operations can be counted.
+
+#### Scenario: Counting operations
+- **WHEN** an agent calls `index_status`
+- **THEN** it gets the number of succeeded and failed operations per kind, over the last 7 days and all time
+
+#### Scenario: Journal failure
+- **WHEN** the journal cannot be written
+- **THEN** the file operation still reports its own outcome, and the journal error is only logged

@@ -192,6 +192,21 @@ public class IndexDbContext : IDisposable
         // Indexes for column sorting
         connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)");
         connection.Execute("CREATE INDEX IF NOT EXISTS idx_files_size ON files(size_bytes)");
+
+        // Journal of file operations (move, rename, copy, delete), kept for history and counts.
+        // No foreign key: entries outlive the files and collections they mention.
+        connection.Execute("""
+            CREATE TABLE IF NOT EXISTS operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                at_utc TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                path TEXT NOT NULL,
+                destination TEXT,
+                error TEXT,
+                source TEXT NOT NULL
+            )
+        """);
+        connection.Execute("CREATE INDEX IF NOT EXISTS idx_operations_at ON operations(at_utc)");
     }
 
     private static bool ColumnExists(SqliteConnection connection, string table, string column)
@@ -477,6 +492,28 @@ public class IndexDbContext : IDisposable
         return deleted;
     }
 
+    public async Task RecordOperationAsync(FileOperationEntry entry)
+    {
+        using var connection = CreateConnection();
+        await connection.ExecuteAsync("""
+            INSERT INTO operations (at_utc, operation, path, destination, error, source)
+            VALUES (@AtUtc, @Operation, @Path, @Destination, @Error, @Source)
+            """,
+            new { AtUtc = FormatUtc(entry.AtUtc), entry.Operation, entry.Path, entry.Destination, entry.Error, entry.Source });
+    }
+
+    // Succeeded / failed count per operation, optionally since a date.
+    public async Task<List<OperationCount>> GetOperationCountsAsync(DateTime? sinceUtc = null)
+    {
+        using var connection = CreateConnection();
+        var rows = await connection.QueryAsync<(string Operation, long Succeeded, long Failed)>("""
+            SELECT operation, SUM(error IS NULL), SUM(error IS NOT NULL) FROM operations
+            WHERE @Since IS NULL OR at_utc >= @Since
+            GROUP BY operation ORDER BY operation
+            """, new { Since = sinceUtc is { } since ? FormatUtc(since) : null });
+        return rows.Select(r => new OperationCount(r.Operation, (int)r.Succeeded, (int)r.Failed)).ToList();
+    }
+
     public static string FormatUtc(DateTime value) => value.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
 
     private static DateTime ParseUtc(string value) =>
@@ -495,6 +532,15 @@ public class IndexDbContext : IDisposable
         using var connection = CreateConnection();
         var dto = await connection.QuerySingleOrDefaultAsync<IndexedFileDto>(
             "SELECT * FROM files WHERE id = @Id", new { Id = id });
+        return dto == null ? null : MapToIndexedFile(dto);
+    }
+
+    // One row for that exact path (any collection), or null when it is not indexed.
+    public async Task<IndexedFile?> GetFileByPathAsync(string path)
+    {
+        using var connection = CreateConnection();
+        var dto = await connection.QueryFirstOrDefaultAsync<IndexedFileDto>(
+            "SELECT * FROM files WHERE path = @Path ORDER BY id LIMIT 1", new { Path = path });
         return dto == null ? null : MapToIndexedFile(dto);
     }
 
@@ -550,6 +596,26 @@ public class IndexDbContext : IDisposable
                 extension = CASE WHEN path = @OldPath AND is_directory = 0 THEN @NewExtension ELSE extension END
             WHERE {source}
             """, p, tx);
+
+        // A row leaves its collection when none of the collection's folders holds the destination
+        // (moving from "to sort" into the library). It goes to the collection whose folder does,
+        // or is dropped when there is none. Collections without folders keep their rows.
+        var roots = (await connection.QueryAsync<(long CollectionId, string Path)>(
+            "SELECT collection_id, path FROM collection_paths", transaction: tx)).ToList();
+        var holders = roots.Where(r => PathHelper.IsSameOrUnder(newPath, r.Path)).ToList();
+        var leaving = roots.Select(r => r.CollectionId).Except(holders.Select(h => h.CollectionId)).ToList();
+        if (leaving.Count > 0)
+        {
+            p.Add("Leaving", leaving);
+            if (holders.Count > 0)
+            {
+                p.Add("Owner", holders.MaxBy(h => h.Path.Length).CollectionId);
+                // OR IGNORE: a row the owner already has at that path wins over the moved copy.
+                await connection.ExecuteAsync(
+                    $"UPDATE OR IGNORE files SET collection_id = @Owner WHERE {destination} AND collection_id IN @Leaving", p, tx);
+            }
+            await connection.ExecuteAsync($"DELETE FROM files WHERE {destination} AND collection_id IN @Leaving", p, tx);
+        }
         tx.Commit();
     }
 

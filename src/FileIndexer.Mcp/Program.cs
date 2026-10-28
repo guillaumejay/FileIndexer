@@ -28,6 +28,11 @@ builder.Services.AddSingleton(_ => new IndexDbContext(Path.GetFullPath(dbPath)))
 builder.Services.AddSingleton<FileScannerService>();
 builder.Services.AddSingleton<IndexPaths>();
 builder.Services.AddSingleton<ScanJobs>();
+
+// Moves, renames and deletes are journaled in the database ("operations" table).
+builder.Services.AddSingleton<IFileOperationJournal, IndexOperationJournal>();
+builder.Services.AddSingleton(_ => TrashServices.ForCurrentPlatform());
+builder.Services.AddSingleton<FileOperationsService>();
 builder.Services.AddMcpServer().WithStdioServerTransport().WithToolsFromAssembly();
 
 await builder.Build().RunAsync();

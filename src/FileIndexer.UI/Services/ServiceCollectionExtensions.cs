@@ -34,14 +34,12 @@ public static class ServiceCollectionExtensions
                 configureScanner?.Invoke(scanner);
                 return scanner;
             });
+            services.AddSingleton<IFileOperationJournal, IndexOperationJournal>();
             services.AddSingleton<FileOperationsService>();
             services.AddSingleton<ActivityLogService>();
             services.AddSingleton<ArchiveService>();
             services.AddSingleton<FileSystemFeatures>();
-            services.TryAddSingleton<ITrashService>(_ =>
-                OperatingSystem.IsWindows() ? new WindowsTrashService()
-                : OperatingSystem.IsMacOS() || OperatingSystem.IsMacCatalyst() ? new MacTrashService()
-                : new LinuxTrashService());
+            services.TryAddSingleton(_ => TrashServices.ForCurrentPlatform());
         }
 
         return services;

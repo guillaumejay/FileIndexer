@@ -11,6 +11,10 @@
 - [x] 2.2 `IndexPaths` : rattachement à la collection et casse du disque
 - [x] 2.3 Outils `search_files`, `search_dirs`, `list_dir`, `rescan`, `index_status`
 - [x] 2.4 `ScanJobs` : un scan à la fois, en arrière-plan
+- [x] 2.5 Outils `move`, `rename`, `delete` (corbeille), résultat par élément, indexation à la volée d'un fichier inconnu
+- [x] 2.6 `MovePathAsync` : rattachement à la collection de destination
+- [x] 2.7 Journal des opérations en base (table `operations`, `IndexOperationJournal`), comptages dans `index_status`
+- [x] 2.8 Journal enregistré aussi par les hôtes Web et MAUI (`AddFileIndexer`)
 
 ## 3. Vérification et docs
 

@@ -19,6 +19,15 @@ Le serveur ouvre la base de l'UI (`--db`, obligatoire et existante, pour ne pas 
 ### D5 : classement
 `rank MATCH 'bm25(10, 2, 1)'` (nom, chemin, dossier). `bm25()` en ORDER BY n'est pas utilisable une fois les résultats groupés (dédoublonnage multi-collections) ; `rank` l'est.
 
+### D6 : opérations sur fichiers dans le MCP
+Ranger, renommer et supprimer font partie de l'usage normal : les faire par l'outil garde l'index juste sans rescan. `delete` passe par la corbeille. Un fichier absent de l'index mais présent sur le disque (téléchargement récent) est indexé à la volée ; un dossier non indexé demande un rescan. `ifExists` : `skip` par défaut, `keep_both`, `replace`.
+
+### D7 : collection suivie au déplacement
+`MovePathAsync` rattache les lignes déplacées à la collection dont un dossier contient la destination (racine la plus longue), ou les retire si aucune ne la contient. Une collection sans dossier garde ses lignes.
+
+### D8 : journal en base
+Table `operations` (date UTC, opération, chemin, destination, erreur, programme source), indexée sur la date, sans clé étrangère : les entrées survivent aux fichiers et collections qu'elles citent. `IFileOperationJournal` (Desktop), optionnel dans `FileOperationsService`, écrit une ligne par élément ; `IndexOperationJournal` l'enregistre dans la base et n'échoue jamais l'opération. Les trois hôtes l'enregistrent. Une table plutôt qu'un fichier : les comptages (`GetOperationCountsAsync`, affichés par `index_status`) sont une requête. Un chemin introuvable est rejeté avant le service et n'est pas journalisé.
+
 ## Risks
 
 - Une base créée avant l'indexation des dossiers n'a aucune ligne dossier : `search_dirs` et `list_dir` sont vides jusqu'au premier rescan (`index_status` donne la date du dernier changement).

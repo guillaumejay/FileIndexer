@@ -412,6 +412,60 @@ public class FileOperationsServiceTests : IDisposable
 
     // --- Fake trash service ------------------------------------------------------------------
 
+    // --- Collections and journal ---------------------------------------------------------------
+
+    [Fact]
+    public async Task Move_IntoAnotherCollection_MovesTheRowsThere()
+    {
+        var src = Dir("to-sort");
+        var dest = Dir("library");
+        var toSort = await _db.CreateCollectionAsync("to sort", null, paths: [src]);
+        var library = await _db.CreateCollectionAsync("library", null, paths: [dest]);
+        _collectionId = toSort.Id;
+        var ids = await Index(WriteFile(src, "book.pdf"));
+
+        await NewService().MoveFilesAsync(ids, dest, NeverConflict);
+
+        var row = Assert.Single(await AllIndexed());
+        Assert.Equal(Path.Combine(dest, "book.pdf"), row.Path);
+        Assert.Equal(library.Id, row.CollectionId);
+    }
+
+    [Fact]
+    public async Task Move_OutOfEveryCollection_DropsTheRows()
+    {
+        var src = Dir("to-sort");
+        var outside = Dir("elsewhere");
+        _collectionId = (await _db.CreateCollectionAsync("to sort", null, paths: [src])).Id;
+        var ids = await Index(WriteFile(src, "book.pdf"));
+
+        await NewService().MoveFilesAsync(ids, outside, NeverConflict);
+
+        Assert.True(File.Exists(Path.Combine(outside, "book.pdf")));
+        Assert.Empty(await AllIndexed());
+    }
+
+    [Fact]
+    public async Task Journal_RecordsEveryMoveRenameAndDelete()
+    {
+        await InitCollection();
+        var src = Dir("src");
+        var dest = Dir("dest");
+        var journal = new IndexOperationJournal(_db, NullLogger<IndexOperationJournal>.Instance);
+        var service = new FileOperationsService(_db, _trash, NullLogger<FileOperationsService>.Instance, journal);
+        var ids = await Index(WriteFile(src, "a.txt"), WriteFile(src, "b.txt"), WriteFile(src, "locked.txt"));
+        _trash.FailFor = p => p.EndsWith("locked.txt");
+
+        await service.MoveFilesAsync([ids[0]], dest, NeverConflict);
+        await service.RenameFileAsync(ids[0], "c.txt", NeverConflict);
+        await service.DeleteFilesAsync([ids[1], ids[2]]);
+
+        Assert.Equal(
+            [new OperationCount("delete", 1, 1), new OperationCount("move", 1, 0), new OperationCount("rename", 1, 0)],
+            await _db.GetOperationCountsAsync());
+        Assert.Empty(await _db.GetOperationCountsAsync(DateTime.UtcNow.AddMinutes(1)));
+    }
+
     private sealed class FakeTrashService : ITrashService
     {
         public List<string> Trashed { get; } = new();
